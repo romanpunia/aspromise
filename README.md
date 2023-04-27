@@ -1,5 +1,5 @@
 ## About
-A header-only implementation of promise concept for AngelScript library. Actual implementation is in __promise.hpp__ file.
+A header-only implementation of promise concept for AngelScript library. Actual implementation is in __promise.hpp__ file, example usage is in __app.cpp__ and __promises.as__ (bin directory)
 
 Promise object it self is pretty lightweight, it follows guarantees provided by **\<any\>** class.
 From design standpoint it provides pretty simple but effective API: **get/set/pending** functions.
