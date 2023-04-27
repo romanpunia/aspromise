@@ -542,11 +542,11 @@ public:
 struct SequentialExecutor
 {
 	/* Called before suspend, this method will probably be optimized out */
-	inline void operator()(BasicPromise<SequentialExecutor>* BasicPromise)
+	inline void operator()(BasicPromise<SequentialExecutor>* Promise)
 	{
 	}
 	/* Called after suspend, this method will probably be inlined anyways */
-	inline void operator()(BasicPromise<SequentialExecutor>* BasicPromise, asIScriptContext* Context)
+	inline void operator()(BasicPromise<SequentialExecutor>* Promise, asIScriptContext* Context)
 	{
 		/*
 			Context should be suspended at this moment but if for
@@ -562,7 +562,7 @@ struct SequentialExecutor
 			this will decrease reference count back to normal,
 			otherwise memory will leak
 		*/
-		BasicPromise->Release();
+		Promise->Release();
 	}
 };
 
