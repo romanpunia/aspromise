@@ -4,6 +4,7 @@
 #define PROMISE_WRAP "wrap" // promise setter function
 #define PROMISE_UNWRAP "unwrap" // promise getter function
 #define PROMISE_YIELD "yield" // promise awaiter function
+#define PROMISE_WHEN "when" // promise callback function
 #define PROMISE_PENDING "pending" // promise status checker
 #define PROMISE_AWAIT "co_await" // keyword for await (C++20 coroutines one love)
 #define PROMISE_USERID 559
@@ -27,7 +28,9 @@
 	converted to this script promise. I don't
 	think here chaining is needed at all as
 	script context is always a coroutine in
-	it's essence and it won't block.
+	it's essence and it won't block. For special
+	cases callback based awaiting using <when>
+	is supported.
 
 	Functions like Promise.all (js) could be
 	implemented in AngelScript i assume.
@@ -55,6 +58,7 @@ private:
 private:
 	asIScriptEngine* Engine;
 	asIScriptContext* Context;
+	asIScriptFunction* Callback;
 	std::mutex Update;
 	Dynamic Value;
 	int RefCount;
@@ -93,6 +97,9 @@ public:
 			if (Type != nullptr)
 				OtherEngine->GCEnumCallback(Type);
 		}
+
+		if (Callback != nullptr)
+			OtherEngine->GCEnumCallback(Callback);
 	}
 	/* For garbage collector to release references */
 	void ReleaseReferences(asIScriptEngine*)
@@ -104,6 +111,12 @@ public:
 			if (Type != nullptr)
 				Type->Release();
 			Clean();
+		}
+
+		if (Callback != nullptr)
+		{
+			Callback->Release();
+			Callback = nullptr;
 		}
 
 		if (Context != nullptr)
@@ -126,6 +139,26 @@ public:
 	int GetRefCount()
 	{
 		return RefCount;
+	}
+	/* Receive stored type id of future value */
+	int GetTypeIdOfObject()
+	{
+		return Value.TypeId;
+	}
+	/* Receive address of future value */
+	void* GetAddressOfObject()
+	{
+		return Retrieve();
+	}
+	/* Provide a callback that should be fired when promise will be settled */
+	void When(asIScriptFunction* NewCallback)
+	{
+		if (Callback != nullptr)
+			Callback->Release();
+		
+		Callback = NewCallback;
+		if (Callback != nullptr)
+			Callback->AddRef();
 	}
 	/*
 		Thread safe store function, this is used as promise resolver function,
@@ -165,14 +198,24 @@ public:
 				memcpy(&Value.Integer, RefPointer, Size);
 			}
 
-			if (Context->GetUserData(PROMISE_USERID) == (void*)this)
+			bool SuspendOwned = Context->GetUserData(PROMISE_USERID) == (void*)this;
+			if (SuspendOwned)
 				Context->SetUserData(nullptr, PROMISE_USERID);
 
-			bool WantsResume = (Context->GetState() != asEXECUTION_ACTIVE);
+			bool WantsResume = (Context->GetState() != asEXECUTION_ACTIVE && SuspendOwned);
 			Update.unlock();
+
+			if (Callback != nullptr)
+			{
+				AddRef();
+				Executor()(this, Context, Callback);
+				Callback->Release();
+				Callback = nullptr;
+			}
+
 			if (WantsResume)
 				Executor()(this, Context);
-			else
+			else if (SuspendOwned)
 				Release();
 		}
 		else
@@ -282,7 +325,7 @@ private:
 		Construct a promise, notify GC, set value to none,
 		grab a reference to script context
 	*/
-	BasicPromise(asIScriptContext* NewContext) noexcept : Engine(nullptr), Context(NewContext), RefCount(1), Marked(false)
+	BasicPromise(asIScriptContext* NewContext) noexcept : Engine(nullptr), Context(NewContext), Callback(nullptr), RefCount(1), Marked(false)
 	{
 		PROMISE_ASSERT(Context != nullptr, "context should not be null");
 		Context->AddRef();
@@ -415,6 +458,8 @@ public:
 		PROMISE_CHECK(Engine->RegisterObjectBehaviour(PROMISE_TYPENAME "<T>", asBEHAVE_GETREFCOUNT, "int f()", asMETHOD(Type, GetRefCount), asCALL_THISCALL));
 		PROMISE_CHECK(Engine->RegisterObjectBehaviour(PROMISE_TYPENAME "<T>", asBEHAVE_ENUMREFS, "void f(int&in)", asMETHOD(Type, EnumReferences), asCALL_THISCALL));
 		PROMISE_CHECK(Engine->RegisterObjectBehaviour(PROMISE_TYPENAME "<T>", asBEHAVE_RELEASEREFS, "void f(int&in)", asMETHOD(Type, ReleaseReferences), asCALL_THISCALL));
+		PROMISE_CHECK(Engine->RegisterFuncdef("void " PROMISE_TYPENAME "<T>::when_callback(T&in)"));
+		PROMISE_CHECK(Engine->RegisterObjectMethod(PROMISE_TYPENAME "<T>", "void " PROMISE_WHEN "(when_callback@+)", asMETHOD(Type, When), asCALL_THISCALL));
 		PROMISE_CHECK(Engine->RegisterObjectMethod(PROMISE_TYPENAME "<T>", "void " PROMISE_WRAP "(?&in)", asMETHODPR(Type, Store, (void*, int), void), asCALL_THISCALL));
 		PROMISE_CHECK(Engine->RegisterObjectMethod(PROMISE_TYPENAME "<T>", "T& " PROMISE_UNWRAP "()", asMETHODPR(Type, Retrieve, (), void*), asCALL_THISCALL));
 		PROMISE_CHECK(Engine->RegisterObjectMethod(PROMISE_TYPENAME "<T>", PROMISE_TYPENAME "<T>@+ " PROMISE_YIELD "()", asMETHOD(Type, YieldIf), asCALL_THISCALL));
@@ -562,6 +607,17 @@ struct SequentialExecutor
 			this will decrease reference count back to normal,
 			otherwise memory will leak
 		*/
+		Promise->Release();
+	}
+	/* Called after suspend, for callback execution */
+	inline void operator()(BasicPromise<SequentialExecutor>* Promise, asIScriptContext* ThisContext, asIScriptFunction* Callback)
+	{
+		asIScriptContext* Context = ThisContext->GetEngine()->CreateContext();
+		PROMISE_ASSERT(Context != nullptr, "context creation is not possible");
+		PROMISE_CHECK(Context->Prepare(Callback));
+		PROMISE_CHECK(Context->SetArgAddress(0, Promise->GetAddressOfObject()));
+		Context->Execute();
+		Context->Release();
 		Promise->Release();
 	}
 };

@@ -12,7 +12,7 @@ is guaranteed, this promise implementation avoids exceptions not because of perf
 they are strings in AngelScript. This behaviour is controlled by user anyways and can be implemented fast.
 
 Promise class is a template for a reason, it needs a specific functor struct that will be called before context suspend
-and when resume is requested. This allows one to implement promise execution in any manner: using thread pool, conditional variables, single threaded sequence of execute calls and using other techniques that could be required by their specific environment. This also allows informative debugging with watchers.
+and when context resume is requested. This allows one to implement promise execution in any manner: using thread pool, conditional variables, single threaded sequence of execute calls and using other techniques that could be required by their specific environment. This also allows informative debugging with watchers.
 
 Implementation does not have some features from other languages like JavaScript, for example **Promise.all**, these could be added through script file easily. Also promise does not contain **\<then\>** function that is used pretty often in JavaScript. That is because unlike JavaScript in AngelScript every context of execution is it self a coroutine so that is considered bloat by my self to add chaining.
 
@@ -31,6 +31,8 @@ This implementation supports important feature in my opinion: __co_await__ keywo
 ```
 
 And final feature is naming customization, modifying preprocessor definitions in __promise.hpp__ you could achieve desired naming conventions. By default C style is used (snake-case). 
+
+In this example promise execution chain is multithreaded. __Execute()__ is called in thread A, then __co_await__ is called, thread A is now out of execution, some random thread B settles the promise and then thread B continues execution of script context.
 
 ## Core built-in dependencies
 * [AngelScript](https://sourceforge.net/projects/angelscript/)

@@ -2,8 +2,17 @@
 #include <stdio.h>
 #include <assert.h>
 #include <string>
+#include <sstream>
 #include <thread>
 #include <inttypes.h>
+
+/* Thread utils */
+std::string GetThreadId()
+{
+	std::stringstream Stream;
+	Stream << std::this_thread::get_id();
+	return Stream.str();
+}
 
 /* Current timestamp */
 uint64_t GetMilliseconds()
@@ -14,15 +23,23 @@ uint64_t GetMilliseconds()
 /* Printing functions */
 void PrintSetTimeout(uint64_t Ms)
 {
-	printf("set timeout for %" PRIu64 "ms\n", Ms);
+	auto ThreadId = GetThreadId();
+	printf("set timeout for %" PRIu64 "ms (thread %s)\n", Ms, ThreadId.c_str());
 }
 void PrintResolveTimeout(uint64_t Ms)
 {
-	printf("triggered timer expiration\n");
+	auto ThreadId = GetThreadId();
+	printf("triggered timer expiration (thread %s)\n", ThreadId.c_str());
+}
+void PrintResolveTimeoutAsync(uint32_t Id)
+{
+	auto ThreadId = GetThreadId();
+	printf("timer %i has been resolved through callback (thread %s)\n", Id, ThreadId.c_str());
 }
 void PrintAndWaitForInput(uint64_t Delta, uint32_t Switches)
 {
-	printf("test finished in %" PRIu64 "ms with %i context switches\n", Delta, Switches);
+	auto ThreadId = GetThreadId();
+	printf("test finished in %" PRIu64 "ms with %i context switches (thread %s)\n", Delta, Switches, ThreadId.c_str());
 	(void)getchar();
 }
 
@@ -40,6 +57,7 @@ void SetTimeoutNative(uint64_t Ms, asIScriptFunction* Callback)
 	PROMISE_ASSERT(ThisContext != nullptr, "timeout should be called within script environment");
 
 	asIScriptContext* Context = ThisContext->GetEngine()->CreateContext();
+	PROMISE_ASSERT(Context != nullptr, "context creation is not possible");
 	PROMISE_CHECK(Context->Prepare(Callback));
 
 	std::thread([Context, Ms]()
@@ -96,6 +114,7 @@ int main(int argc, char* argv[])
 	PROMISE_CHECK(Engine->RegisterGlobalFunction("uint64 get_milliseconds()", asFUNCTION(GetMilliseconds), asCALL_CDECL));
 	PROMISE_CHECK(Engine->RegisterGlobalFunction("void print_set_timeout(uint64)", asFUNCTION(PrintSetTimeout), asCALL_CDECL));
 	PROMISE_CHECK(Engine->RegisterGlobalFunction("void print_resolve_timeout()", asFUNCTION(PrintResolveTimeout), asCALL_CDECL));
+	PROMISE_CHECK(Engine->RegisterGlobalFunction("void print_resolve_timeout_async(uint32)", asFUNCTION(PrintResolveTimeoutAsync), asCALL_CDECL));
 	PROMISE_CHECK(Engine->RegisterGlobalFunction("void print_and_wait_for_input(uint64, uint32)", asFUNCTION(PrintAndWaitForInput), asCALL_CDECL));
 	PROMISE_CHECK(Engine->RegisterGlobalFunction("void set_timeout_native(uint64, timer_callback@+)", asFUNCTION(SetTimeoutNative), asCALL_CDECL));
 	PROMISE_CHECK(Engine->RegisterGlobalFunction("promise<int32>@+ set_timeout_native_promise(uint64)", asFUNCTION(SetTimeoutNativePromise), asCALL_CDECL));
