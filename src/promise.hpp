@@ -497,7 +497,7 @@ public:
 					part of input text with generated code
 					like this: text <new-code> text
 				*/
-				size_t RightSize = Offset;
+				size_t RightSize = Size - Offset;
 				char* Right = (char*)asAllocMem(RightSize);
 				memcpy(Right, Code + End, RightSize);
 
@@ -523,6 +523,7 @@ public:
 				asFreeMem(Code);
 
 				Code = Substring;
+				Size = strlen(Code);
 				Offset += MiddleSize;
 			}
 			else

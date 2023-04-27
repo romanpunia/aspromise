@@ -8,13 +8,29 @@ effective task processing in concurrent environments. AngelScript implements cor
 is highly utilized by this promise interface.
 
 AngelScript engine will work with class as with GC watched object handle. Thread safe promise settlement (resolve)
-is guaranteed, thus this promise implementation avoids exceptions not for performance penalty but rather because
+is guaranteed, this promise implementation avoids exceptions not because of performance penalty but rather because
 they are strings in AngelScript. This behaviour is controlled by user anyways and can be implemented fast.
 
 Promise class is a template for a reason, it needs a specific functor struct that will be called before context suspend
 and when resume is requested. This allows one to implement promise execution in any manner: using thread pool, conditional variables, single threaded sequence of execute calls and using other techniques that could be required by their specific environment. This also allows informative debugging with watchers.
 
 Implementation does not have some features from other languages like JavaScript, for example **Promise.all**, these could be added through script file easily. Also promise does not contain **\<then\>** function that is used pretty often in JavaScript. That is because unlike JavaScript in AngelScript every context of execution is it self a coroutine so that is considered bloat by my self to add chaining.
+
+Promise execution is conditional meaning early settled promises will never suspend context which improves performance and reduces latency. Also promise implementation uses AngelScript's memory functions to ensure support for memory pools and other optimizations.
+
+This implementation supports important feature in my opinion: __co_await__ keyword brought directly from C++20, it works just like __await__ keyword in JavaScript but anywhere. This feature is not (yet?) AngelScript compiler supported so it requires an extra step over source code of script before sending it to compiler. See following usage examples:
+```cpp
+    promise<http_response@>@ future_int = ...;
+    co_await future_int; // future_int could be a function call
+    co_await (future_int);
+    (co_await future_int) + 1;
+    if ((co_await (future_int)) > 0);
+    while ((co_await future_int) == 1);
+
+    co_await(future_int) // Not supported, space is required
+```
+
+And final feature is naming customization, modifying preprocessor definitions in __promise.hpp__ you could achieve desired naming conventions. By default C style is used (snake-case). 
 
 ## Core built-in dependencies
 * [AngelScript](https://sourceforge.net/projects/angelscript/)

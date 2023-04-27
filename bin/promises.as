@@ -32,7 +32,7 @@ void main()
 
     print_set_timeout(1000);
     uint32 switches = co_await set_timeout(1000);
-
+    
     auto end = get_milliseconds();
     print_and_wait_for_input(end - start, switches);
 }
