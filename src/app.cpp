@@ -112,16 +112,16 @@ int main(int argc, char* argv[])
 	Code[Size] = '\0';
 	fclose(Stream);
 
-	/* Promise generators */
+	/* Promise syntax preprocessing */
 	char* Generated = SeqPromise::GenerateEntrypoints(Code, Size);
+	Size = strlen(Generated);
 	asFreeMem(Code);
-	Code = Generated;
-	Size = strlen(Code);
 
 	/* Module initialization */
 	asIScriptModule* Module = Engine->GetModule(Path.c_str(), asGM_ALWAYS_CREATE);
-	PROMISE_CHECK(Module->AddScriptSection(Path.c_str(), Code, Size));
+	PROMISE_CHECK(Module->AddScriptSection(Path.c_str(), Generated, Size));
 	PROMISE_CHECK(Module->Build());
+	asFreeMem(Generated);
 
 	/* Script entry point */
 	asIScriptFunction* Main = Module->GetFunctionByDecl("void main()");
