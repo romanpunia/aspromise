@@ -133,7 +133,7 @@ int main(int argc, char* argv[])
 
 	/*
 		Execution cycle, we execute only once here,
-		then wait until there are now promises left,
+		then wait until there are no promises left,
 		it could be implemented differently through
 		conditional variables, thread pool, event loop or
 		simple execute cycle using appropriate executor.
