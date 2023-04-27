@@ -22,6 +22,7 @@ This implementation supports important feature in my opinion: __co_await__ keywo
 ```cpp
     promise<http_response@>@ future = ...;
     co_await future; // future could be a function call
+    co_await  (    future    );
     co_await (future);
     auto@ response = (co_await future) + "output"; // if http_response has plus op
     if ((co_await (future)).status == 200);
