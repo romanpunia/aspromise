@@ -20,14 +20,14 @@ Promise execution is conditional meaning early settled promises will never suspe
 
 This implementation supports important feature in my opinion: __co_await__ keyword brought directly from C++20, it works just like __await__ keyword in JavaScript but anywhere. This feature is not (yet?) AngelScript compiler supported so it requires an extra step over source code of script before sending it to compiler. See following usage examples:
 ```cpp
-    promise<http_response@>@ future_int = ...;
-    co_await future_int; // future_int could be a function call
-    co_await (future_int);
-    (co_await future_int) + 1;
-    if ((co_await (future_int)) > 0);
-    while ((co_await future_int) == 1);
+    promise<http_response@>@ future = ...;
+    co_await future; // future could be a function call
+    co_await (future);
+    auto@ response = (co_await future) + "output"; // if http_response has plus op
+    if ((co_await (future)).status == 200);
+    while ((co_await future).is_socket_reading);
 
-    co_await(future_int) // Not supported, space is required
+    co_await(future) // Not supported, space is required
 ```
 
 And final feature is naming customization, modifying preprocessor definitions in __promise.hpp__ you could achieve desired naming conventions. By default C style is used (snake-case). 
