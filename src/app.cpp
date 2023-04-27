@@ -52,6 +52,25 @@ void SetTimeoutNative(uint64_t Ms, asIScriptFunction* Callback)
 	}).detach();
 }
 
+/*
+	Same as previous but promise will be returned, this is an example
+	when promise is settled within C++
+*/
+SeqPromise* SetTimeoutNativePromise(uint64_t Ms)
+{
+	SeqPromise* Result = SeqPromise::Create();
+	std::thread([Ms, Result]()
+	{
+		std::this_thread::sleep_for(std::chrono::milliseconds(Ms));
+		PrintResolveTimeout(Ms); // Print as in script file
+
+		int32_t Value = 1;
+		Result->Store(&Value, asTYPEID_INT32); // Settle the promise
+	}).detach();
+
+	return Result;
+}
+
 /* Compiler status logger */
 void Log(const asSMessageInfo* Message, void*)
 {
@@ -72,13 +91,14 @@ int main(int argc, char* argv[])
 	PROMISE_CHECK(Engine->SetEngineProperty(asEP_USE_CHARACTER_LITERALS, 1));
 	
 	/* Interface registration */
+	SeqPromise::Register(Engine);
 	PROMISE_CHECK(Engine->RegisterFuncdef("void timer_callback()"));
 	PROMISE_CHECK(Engine->RegisterGlobalFunction("uint64 get_milliseconds()", asFUNCTION(GetMilliseconds), asCALL_CDECL));
 	PROMISE_CHECK(Engine->RegisterGlobalFunction("void print_set_timeout(uint64)", asFUNCTION(PrintSetTimeout), asCALL_CDECL));
 	PROMISE_CHECK(Engine->RegisterGlobalFunction("void print_resolve_timeout()", asFUNCTION(PrintResolveTimeout), asCALL_CDECL));
 	PROMISE_CHECK(Engine->RegisterGlobalFunction("void print_and_wait_for_input(uint64, uint32)", asFUNCTION(PrintAndWaitForInput), asCALL_CDECL));
 	PROMISE_CHECK(Engine->RegisterGlobalFunction("void set_timeout_native(uint64, timer_callback@+)", asFUNCTION(SetTimeoutNative), asCALL_CDECL));
-	SeqPromise::Register(Engine);
+	PROMISE_CHECK(Engine->RegisterGlobalFunction("promise<int32>@+ set_timeout_native_promise(uint64)", asFUNCTION(SetTimeoutNativePromise), asCALL_CDECL));
 
 	/* Script dump */
 	FILE* Stream = (FILE*)fopen(Path.c_str(), "rb");
