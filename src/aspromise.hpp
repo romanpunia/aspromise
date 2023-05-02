@@ -1,13 +1,18 @@
 #ifndef AS_PROMISE_HPP
 #define AS_PROMISE_HPP
+#ifndef PROMISE_CONFIG
+#define PROMISE_CONFIG
 #define PROMISE_TYPENAME "promise" // promise type
 #define PROMISE_WRAP "wrap" // promise setter function
 #define PROMISE_UNWRAP "unwrap" // promise getter function
 #define PROMISE_YIELD "yield" // promise awaiter function
 #define PROMISE_WHEN "when" // promise callback function
+#define PROMISE_EVENT "when_callback" // promise funcdef name
 #define PROMISE_PENDING "pending" // promise status checker
 #define PROMISE_AWAIT "co_await" // keyword for await (C++20 coroutines one love)
-#define PROMISE_USERID 559
+#define PROMISE_USERID 559 // promise user data identifier (any value)
+#define PROMISE_CALLBACKS true // allow <when> listener
+#endif
 #ifndef NDEBUG
 #define PROMISE_ASSERT(Expression, Message) assert((Expression) && Message)
 #define PROMISE_CHECK(Expression) (assert((Expression) >= 0))
@@ -15,10 +20,13 @@
 #define PROMISE_ASSERT(Expression, Message)
 #define PROMISE_CHECK(Expression) (Expression)
 #endif
+#ifndef ANGELSCRIPT_H
 #include <angelscript.h>
+#endif
 #include <assert.h>
 #include <mutex>
 #include <cctype>
+#include <functional>
 
 /*
 	I use similar implementation only as a wrapper
@@ -35,11 +43,11 @@
 	Functions like Promise.all (js) could be
 	implemented in AngelScript i assume.
 
-	see (native): https://github.com/romanpunia/edge/blob/master/src/edge/core/core.h?plain=1#L2887
-	see (wrapper): https://github.com/romanpunia/edge/blob/master/src/edge/core/bindings.h?plain=1#L789
+	see (native): https://github.com/romanpunia/mavi/blob/master/src/mavi/core/core.h?plain=1#L2887
+	see (wrapper): https://github.com/romanpunia/mavi/blob/master/src/mavi/core/bindings.h?plain=1#L789
 */
 template <typename Executor>
-class BasicPromise
+class AsPromise
 {
 private:
 	/* Basically used from <any> class */
@@ -55,10 +63,15 @@ private:
 		int TypeId;
 	};
 
+	struct
+	{
+		std::function<void(AsPromise<Executor>*)> Native;
+		asIScriptFunction* Wrapper = nullptr;
+	} Callbacks;
+
 private:
 	asIScriptEngine* Engine;
 	asIScriptContext* Context;
-	asIScriptFunction* Callback;
 	std::mutex Update;
 	Dynamic Value;
 	int RefCount;
@@ -72,7 +85,7 @@ public:
 		if (asAtomicDec(RefCount) <= 0)
 		{
 			ReleaseReferences(nullptr);
-			this->~BasicPromise();
+			this->~AsPromise();
 			asFreeMem((void*)this);
 		}
 	}
@@ -98,8 +111,8 @@ public:
 				OtherEngine->GCEnumCallback(Type);
 		}
 
-		if (Callback != nullptr)
-			OtherEngine->GCEnumCallback(Callback);
+		if (Callbacks.Wrapper != nullptr)
+			OtherEngine->GCEnumCallback(Callbacks.Wrapper);
 	}
 	/* For garbage collector to release references */
 	void ReleaseReferences(asIScriptEngine*)
@@ -113,10 +126,10 @@ public:
 			Clean();
 		}
 
-		if (Callback != nullptr)
+		if (Callbacks.Wrapper != nullptr)
 		{
-			Callback->Release();
-			Callback = nullptr;
+			Callbacks.Wrapper->Release();
+			Callbacks.Wrapper = nullptr;
 		}
 
 		if (Context != nullptr)
@@ -145,20 +158,35 @@ public:
 	{
 		return Value.TypeId;
 	}
-	/* Receive address of future value */
+	/* Thread safe retrieve function, also non-blocking, another syntax is used */
 	void* GetAddressOfObject()
 	{
-		return Retrieve();
+		if (Value.TypeId == asTYPEID_VOID)
+			return nullptr;
+
+		if (Value.TypeId & asTYPEID_OBJHANDLE)
+			return &Value.Object;
+		else if (Value.TypeId & asTYPEID_MASK_OBJECT)
+			return Value.Object;
+		else if (Value.TypeId <= asTYPEID_DOUBLE || Value.TypeId & asTYPEID_MASK_SEQNBR)
+			return &Value.Integer;
+
+		return nullptr;
 	}
-	/* Provide a callback that should be fired when promise will be settled */
+	/* Provide a native callback that should be fired when promise will be settled */
+	void When(std::function<void(AsPromise<Executor>*)>&& NewCallback)
+	{
+		Callbacks.Native = std::move(NewCallback);
+	}
+	/* Provide a script callback that should be fired when promise will be settled */
 	void When(asIScriptFunction* NewCallback)
 	{
-		if (Callback != nullptr)
-			Callback->Release();
+		if (Callbacks.Wrapper != nullptr)
+			Callbacks.Wrapper->Release();
 		
-		Callback = NewCallback;
-		if (Callback != nullptr)
-			Callback->AddRef();
+		Callbacks.Wrapper = NewCallback;
+		if (Callbacks.Wrapper != nullptr)
+			Callbacks.Wrapper->AddRef();
 	}
 	/*
 		Thread safe store function, this is used as promise resolver function,
@@ -173,60 +201,64 @@ public:
 		PROMISE_ASSERT(Engine != nullptr, "promise is malformed (engine is null)");
 		PROMISE_ASSERT(Context != nullptr, "promise is malformed (context is null)");
 
-		if (Value.TypeId == asTYPEID_VOID)
-		{
-			if ((RefTypeId & asTYPEID_MASK_OBJECT))
-			{
-				asITypeInfo* Type = Engine->GetTypeInfoById(RefTypeId);
-				if (Type != nullptr)
-					Type->AddRef();
-			}
-
-			Value.TypeId = RefTypeId;
-			if (Value.TypeId & asTYPEID_OBJHANDLE)
-			{
-				Value.Object = *(void**)RefPointer;
-			}
-			else if (Value.TypeId & asTYPEID_MASK_OBJECT)
-			{
-				Value.Object = Engine->CreateScriptObjectCopy(RefPointer, Engine->GetTypeInfoById(Value.TypeId));
-			}
-			else
-			{
-				Value.Integer = 0;
-				int Size = Engine->GetSizeOfPrimitiveType(Value.TypeId);
-				memcpy(&Value.Integer, RefPointer, Size);
-			}
-
-			bool SuspendOwned = Context->GetUserData(PROMISE_USERID) == (void*)this;
-			if (SuspendOwned)
-				Context->SetUserData(nullptr, PROMISE_USERID);
-
-			bool WantsResume = (Context->GetState() != asEXECUTION_ACTIVE && SuspendOwned);
-			Update.unlock();
-
-			if (Callback != nullptr)
-			{
-				AddRef();
-				Executor()(this, Context, Callback);
-				Callback->Release();
-				Callback = nullptr;
-			}
-
-			if (WantsResume)
-				Executor()(this, Context);
-			else if (SuspendOwned)
-				Release();
-		}
-		else
+		if (Value.TypeId != asTYPEID_VOID)
 		{
 			asIScriptContext* ThisContext = asGetActiveContext();
 			if (!ThisContext)
 				ThisContext = Context;
 
 			ThisContext->SetException("promise is already fulfilled");
-			Update.unlock();
+			return Update.unlock();
 		}
+
+		if ((RefTypeId & asTYPEID_MASK_OBJECT))
+		{
+			asITypeInfo* Type = Engine->GetTypeInfoById(RefTypeId);
+			if (Type != nullptr)
+				Type->AddRef();
+		}
+
+		Value.TypeId = RefTypeId;
+		if (Value.TypeId & asTYPEID_OBJHANDLE)
+		{
+			Value.Object = *(void**)RefPointer;
+		}
+		else if (Value.TypeId & asTYPEID_MASK_OBJECT)
+		{
+			Value.Object = Engine->CreateScriptObjectCopy(RefPointer, Engine->GetTypeInfoById(Value.TypeId));
+		}
+		else
+		{
+			Value.Integer = 0;
+			int Size = Engine->GetSizeOfPrimitiveType(Value.TypeId);
+			memcpy(&Value.Integer, RefPointer, Size);
+		}
+
+		bool SuspendOwned = Context->GetUserData(PROMISE_USERID) == (void*)this;
+		if (SuspendOwned)
+			Context->SetUserData(nullptr, PROMISE_USERID);
+
+		bool WantsResume = (Context->GetState() != asEXECUTION_ACTIVE && SuspendOwned);
+		Update.unlock();
+
+		if (Callbacks.Native != nullptr)
+		{
+			Callbacks.Native(this);
+			Callbacks.Native = nullptr;
+		}
+
+		if (Callbacks.Wrapper != nullptr)
+		{
+			AddRef();
+			Executor()(this, Context, Callbacks.Wrapper);
+			Callbacks.Wrapper->Release();
+			Callbacks.Wrapper = nullptr;
+		}
+
+		if (WantsResume)
+			Executor()(this, Context);
+		else if (SuspendOwned)
+			Release();
 	}
 	/* Thread safe store function, a little easier for C++ usage */
 	void Store(void* RefPointer, const char* TypeName)
@@ -280,21 +312,6 @@ public:
 
 		return false;
 	}
-	/* Thread safe retrieve function, also non-blocking, another syntax is used */
-	void* Retrieve()
-	{
-		if (Value.TypeId == asTYPEID_VOID)
-			return nullptr;
-
-		if (Value.TypeId & asTYPEID_OBJHANDLE)
-			return &Value.Object;
-		else if (Value.TypeId & asTYPEID_MASK_OBJECT)
-			return Value.Object;
-		else if (Value.TypeId <= asTYPEID_DOUBLE || Value.TypeId & asTYPEID_MASK_SEQNBR)
-			return &Value.Integer;
-
-		return nullptr;
-	}
 	/* Can be used to check if promise is still pending */
 	bool IsPending()
 	{
@@ -306,7 +323,7 @@ public:
 		reference to this promise if it is still pending or do nothing
 		if promise was already settled
 	*/
-	BasicPromise* YieldIf()
+	AsPromise* YieldIf()
 	{
 		std::unique_lock<std::mutex> Unique(Update);
 		if (Value.TypeId == asTYPEID_VOID && Context != nullptr)
@@ -319,13 +336,35 @@ public:
 
 		return this;
 	}
+	/*
+		This function can be used to await for promise
+		within C++ code (blocking style)
+	*/
+	AsPromise* WaitIf()
+	{
+		if (!IsPending())
+			return this;
+
+		AddRef();
+		{
+			std::unique_lock<std::mutex> Unique(Update);
+			if (IsPending())
+			{
+				std::condition_variable Ready;
+				Callbacks.Native = [&Ready](AsPromise<Executor>*) { Ready.notify_all(); };
+				Ready.wait(Unique, [this]() { return !IsPending(); });
+			}
+		}
+		Release();
+		return this;
+	}
 
 private:
 	/*
 		Construct a promise, notify GC, set value to none,
 		grab a reference to script context
 	*/
-	BasicPromise(asIScriptContext* NewContext) noexcept : Engine(nullptr), Context(NewContext), Callback(nullptr), RefCount(1), Marked(false)
+	AsPromise(asIScriptContext* NewContext) noexcept : Engine(nullptr), Context(NewContext), RefCount(1), Marked(false)
 	{
 		PROMISE_ASSERT(Context != nullptr, "context should not be null");
 		Context->AddRef();
@@ -340,15 +379,15 @@ private:
 	}
 
 public:
-	/* BasicPromise creation function, for use within C++ */
-	static BasicPromise* Create()
+	/* AsPromise creation function, for use within C++ */
+	static AsPromise* Create()
 	{
-		return new(asAllocMem(sizeof(BasicPromise))) BasicPromise(asGetActiveContext());
+		return new(asAllocMem(sizeof(AsPromise))) AsPromise(asGetActiveContext());
 	}
-	/* BasicPromise creation function, for use within AngelScript */
-	static BasicPromise* CreateFactory(void* _Ref, int TypeId)
+	/* AsPromise creation function, for use within AngelScript */
+	static AsPromise* CreateFactory(void* _Ref, int TypeId)
 	{
-		BasicPromise* Future = new(asAllocMem(sizeof(BasicPromise))) BasicPromise(asGetActiveContext());
+		AsPromise* Future = new(asAllocMem(sizeof(AsPromise))) AsPromise(asGetActiveContext());
 		if (TypeId != asTYPEID_VOID)
 			Future->Store(_Ref, TypeId);
 
@@ -446,7 +485,7 @@ public:
 	*/
 	static void Register(asIScriptEngine* Engine)
 	{
-		using Type = BasicPromise<Executor>;
+		using Type = AsPromise<Executor>;
 		PROMISE_ASSERT(Engine != nullptr, "script engine should not be null");
 		PROMISE_CHECK(Engine->RegisterObjectType(PROMISE_TYPENAME "<class T>", 0, asOBJ_REF | asOBJ_GC | asOBJ_TEMPLATE));
 		PROMISE_CHECK(Engine->RegisterObjectBehaviour(PROMISE_TYPENAME "<T>", asBEHAVE_FACTORY, PROMISE_TYPENAME "<T>@ f(?&in)", asFUNCTION(Type::CreateFactory), asCALL_CDECL));
@@ -458,12 +497,14 @@ public:
 		PROMISE_CHECK(Engine->RegisterObjectBehaviour(PROMISE_TYPENAME "<T>", asBEHAVE_GETREFCOUNT, "int f()", asMETHOD(Type, GetRefCount), asCALL_THISCALL));
 		PROMISE_CHECK(Engine->RegisterObjectBehaviour(PROMISE_TYPENAME "<T>", asBEHAVE_ENUMREFS, "void f(int&in)", asMETHOD(Type, EnumReferences), asCALL_THISCALL));
 		PROMISE_CHECK(Engine->RegisterObjectBehaviour(PROMISE_TYPENAME "<T>", asBEHAVE_RELEASEREFS, "void f(int&in)", asMETHOD(Type, ReleaseReferences), asCALL_THISCALL));
-		PROMISE_CHECK(Engine->RegisterFuncdef("void " PROMISE_TYPENAME "<T>::when_callback(T&in)"));
-		PROMISE_CHECK(Engine->RegisterObjectMethod(PROMISE_TYPENAME "<T>", "void " PROMISE_WHEN "(when_callback@+)", asMETHOD(Type, When), asCALL_THISCALL));
 		PROMISE_CHECK(Engine->RegisterObjectMethod(PROMISE_TYPENAME "<T>", "void " PROMISE_WRAP "(?&in)", asMETHODPR(Type, Store, (void*, int), void), asCALL_THISCALL));
-		PROMISE_CHECK(Engine->RegisterObjectMethod(PROMISE_TYPENAME "<T>", "T& " PROMISE_UNWRAP "()", asMETHODPR(Type, Retrieve, (), void*), asCALL_THISCALL));
+		PROMISE_CHECK(Engine->RegisterObjectMethod(PROMISE_TYPENAME "<T>", "T& " PROMISE_UNWRAP "()", asMETHODPR(Type, GetAddressOfObject, (), void*), asCALL_THISCALL));
 		PROMISE_CHECK(Engine->RegisterObjectMethod(PROMISE_TYPENAME "<T>", PROMISE_TYPENAME "<T>@+ " PROMISE_YIELD "()", asMETHOD(Type, YieldIf), asCALL_THISCALL));
 		PROMISE_CHECK(Engine->RegisterObjectMethod(PROMISE_TYPENAME "<T>", "bool " PROMISE_PENDING "()", asMETHOD(Type, IsPending), asCALL_THISCALL));
+#if PROMISE_CALLBACKS
+		PROMISE_CHECK(Engine->RegisterFuncdef("void " PROMISE_TYPENAME "<T>::" PROMISE_EVENT "(T&in)"));
+		PROMISE_CHECK(Engine->RegisterObjectMethod(PROMISE_TYPENAME "<T>", "void " PROMISE_WHEN "(" PROMISE_EVENT "@+)", asMETHODPR(Type, When, (asIScriptFunction*), void), asCALL_THISCALL));
+#endif
 	}
 	/*
 		Code generator function for custom syntax, in my in-engine implementation
@@ -584,14 +625,14 @@ public:
 	resume context at thread that has
 	settled the promise,
 */
-struct SequentialExecutor
+struct SeqAsExecutor
 {
 	/* Called before suspend, this method will probably be optimized out */
-	inline void operator()(BasicPromise<SequentialExecutor>* Promise)
+	inline void operator()(AsPromise<SeqAsExecutor>* Promise)
 	{
 	}
 	/* Called after suspend, this method will probably be inlined anyways */
-	inline void operator()(BasicPromise<SequentialExecutor>* Promise, asIScriptContext* Context)
+	inline void operator()(AsPromise<SeqAsExecutor>* Promise, asIScriptContext* Context)
 	{
 		/*
 			Context should be suspended at this moment but if for
@@ -610,7 +651,7 @@ struct SequentialExecutor
 		Promise->Release();
 	}
 	/* Called after suspend, for callback execution */
-	inline void operator()(BasicPromise<SequentialExecutor>* Promise, asIScriptContext* ThisContext, asIScriptFunction* Callback)
+	inline void operator()(AsPromise<SeqAsExecutor>* Promise, asIScriptContext* ThisContext, asIScriptFunction* Callback)
 	{
 		asIScriptContext* Context = ThisContext->GetEngine()->CreateContext();
 		PROMISE_ASSERT(Context != nullptr, "context creation is not possible");
@@ -622,5 +663,7 @@ struct SequentialExecutor
 	}
 };
 
-using SeqPromise = BasicPromise<SequentialExecutor>;
+/* Typename exists for intended data type inside a promise */
+template <typename T>
+using SeqAsPromise = AsPromise<SeqAsExecutor>;
 #endif

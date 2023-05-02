@@ -39,6 +39,12 @@ void main()
     print_set_timeout(500);
     co_await set_timeout(500);
 
+    print_set_timeout(1350);
+    await_promise_blocking(set_timeout(1350)); // await promise within C++ (blocking)
+    
+    print_set_timeout(1050);
+    await_promise_non_blocking(set_timeout(1050)); // await promise within C++ (non-blocking)
+
     print_set_timeout(1000);
     uint32 switches = co_await set_timeout(1000); // co_await returns stored value by the way
     

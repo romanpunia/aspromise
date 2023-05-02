@@ -1,4 +1,4 @@
-#include "promise.hpp"
+#include "../src/aspromise.hpp"
 #include <stdio.h>
 #include <assert.h>
 #include <string>
@@ -24,7 +24,7 @@ uint64_t GetMilliseconds()
 void PrintSetTimeout(uint64_t Ms)
 {
 	auto ThreadId = GetThreadId();
-	printf("set timeout for %" PRIu64 "ms (thread %s)\n", Ms, ThreadId.c_str());
+	printf("\nset timeout for %" PRIu64 "ms (thread %s)\n", Ms, ThreadId.c_str());
 }
 void PrintResolveTimeout(uint64_t Ms)
 {
@@ -39,7 +39,7 @@ void PrintResolveTimeoutAsync(uint32_t Id)
 void PrintAndWaitForInput(uint64_t Delta, uint32_t Switches)
 {
 	auto ThreadId = GetThreadId();
-	printf("test finished in %" PRIu64 "ms with %i context switches (thread %s)\n", Delta, Switches, ThreadId.c_str());
+	printf("\ntest finished in %" PRIu64 "ms with %i context switches (thread %s)\n", Delta, Switches, ThreadId.c_str());
 	(void)getchar();
 }
 
@@ -74,9 +74,9 @@ void SetTimeoutNative(uint64_t Ms, asIScriptFunction* Callback)
 	Same as previous but promise will be returned, this is an example
 	when promise is settled within C++
 */
-SeqPromise* SetTimeoutNativePromise(uint64_t Ms)
+SeqAsPromise<int>* SetTimeoutNativePromise(uint64_t Ms)
 {
-	SeqPromise* Result = SeqPromise::Create();
+	SeqAsPromise<int>* Result = SeqAsPromise<int>::Create();
 	std::thread([Ms, Result]()
 	{
 		std::this_thread::sleep_for(std::chrono::milliseconds(Ms));
@@ -84,9 +84,32 @@ SeqPromise* SetTimeoutNativePromise(uint64_t Ms)
 
 		int32_t Value = 1;
 		Result->Store(&Value, asTYPEID_INT32); // Settle the promise
+		Result->Release(); // Must release, returned promise ref-count is automatically incremented
 	}).detach();
 
 	return Result;
+}
+
+/* AngelScript to C++ promises */
+void AwaitPromiseBlocking(SeqAsPromise<int>* Promise)
+{
+	int32_t Number = 0;
+	Promise->WaitIf()->Retrieve(&Number, asTYPEID_INT32);
+	printf("received number %i from script context (blocking)\n", Number);
+}
+void AwaitPromiseNonBlocking(SeqAsPromise<int>* Promise)
+{
+	auto* Context = asGetActiveContext();
+	if (Context != nullptr)
+		PROMISE_CHECK(Context->Suspend());
+
+	Promise->When([Context](SeqAsPromise<int>* Promise)
+	{
+		int32_t Number = 0;
+		Promise->Retrieve(&Number, asTYPEID_INT32);
+		printf("received number %i from script context (non-blocking)\n", Number);
+		PROMISE_CHECK(Context->Execute());
+	});
 }
 
 /* Compiler status logger */
@@ -109,7 +132,7 @@ int main(int argc, char* argv[])
 	PROMISE_CHECK(Engine->SetEngineProperty(asEP_USE_CHARACTER_LITERALS, 1));
 	
 	/* Interface registration */
-	SeqPromise::Register(Engine);
+	SeqAsPromise<int>::Register(Engine);
 	PROMISE_CHECK(Engine->RegisterFuncdef("void timer_callback()"));
 	PROMISE_CHECK(Engine->RegisterGlobalFunction("uint64 get_milliseconds()", asFUNCTION(GetMilliseconds), asCALL_CDECL));
 	PROMISE_CHECK(Engine->RegisterGlobalFunction("void print_set_timeout(uint64)", asFUNCTION(PrintSetTimeout), asCALL_CDECL));
@@ -117,6 +140,8 @@ int main(int argc, char* argv[])
 	PROMISE_CHECK(Engine->RegisterGlobalFunction("void print_resolve_timeout_async(uint32)", asFUNCTION(PrintResolveTimeoutAsync), asCALL_CDECL));
 	PROMISE_CHECK(Engine->RegisterGlobalFunction("void print_and_wait_for_input(uint64, uint32)", asFUNCTION(PrintAndWaitForInput), asCALL_CDECL));
 	PROMISE_CHECK(Engine->RegisterGlobalFunction("void set_timeout_native(uint64, timer_callback@+)", asFUNCTION(SetTimeoutNative), asCALL_CDECL));
+	PROMISE_CHECK(Engine->RegisterGlobalFunction("void await_promise_blocking(promise<int>@+)", asFUNCTION(AwaitPromiseBlocking), asCALL_CDECL));
+	PROMISE_CHECK(Engine->RegisterGlobalFunction("void await_promise_non_blocking(promise<int>@+)", asFUNCTION(AwaitPromiseNonBlocking), asCALL_CDECL));
 	PROMISE_CHECK(Engine->RegisterGlobalFunction("promise<int32>@+ set_timeout_native_promise(uint64)", asFUNCTION(SetTimeoutNativePromise), asCALL_CDECL));
 
 	/* Script dump */
@@ -132,7 +157,7 @@ int main(int argc, char* argv[])
 	fclose(Stream);
 
 	/* Promise syntax preprocessing */
-	char* Generated = SeqPromise::GenerateEntrypoints(Code, Size);
+	char* Generated = SeqAsPromise<int>::GenerateEntrypoints(Code, Size);
 	Size = strlen(Generated);
 	asFreeMem(Code);
 

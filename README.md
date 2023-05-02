@@ -1,7 +1,60 @@
 ## About
-A header-only implementation of promise concept for AngelScript library. Actual implementation is in __promise.hpp__ file, example usage is in __app.cpp__ and __promises.as__ (bin directory)
+A header-only implementation of promise concept for AngelScript library. Actual implementation is in __promise.hpp__ file, see example usage (examples directory): is in __promises.cpp__ and __promises.as__
 
-Promise object it self is pretty lightweight, it follows guarantees provided by **\<any\>** class.
+## Usage
+Drag and drop __promise.hpp__ somewhere into your project.
+
+## Example usage with AngelScript
+Promise creation
+```as
+    promise<int>@ result = promise<int>();
+```
+
+Promise settlement
+```cpp
+    result.wrap(10);
+```
+
+Promise awaiting using coroutines
+```cpp
+    int number_await = co_await result;
+    int number_unwrap = result.yield().unwrap();
+```
+
+Promise awaiting using callbacks
+```js
+    result.when(function(number) { });
+```
+
+## Example usage with C++
+Promise creation
+```cpp
+    SeqAsPromise<int>* Result = SeqAsPromise::Create();
+```
+
+Promise settlement
+```cpp
+    int32_t Number = 10;
+    Result->Store(&Number, asTYPEID_INT32);
+```
+
+Promise awaiting using wait
+```cpp
+    int32_t Number;
+    Result->Retrieve(&Number, asTYPEID_INT32);
+```
+
+Promise awaiting using callbacks
+```cpp
+    Result->When([](AsSeqPromise<int>* Result)
+    {
+        int32_t Number;
+        Result->Retrieve(&Number, asTYPEID_INT32);
+    });
+```
+
+## Details
+Promise object it self is measurably lightweight, it follows guarantees provided by **\<any\>** class.
 From design standpoint it provides pretty simple but effective API: **get/set/pending** functions.
 Implementation works in a way that allows one to never block for waiting. This could be used for
 effective task processing in concurrent environments. AngelScript implements coroutines concept which

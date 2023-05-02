@@ -5,10 +5,10 @@ else()
 	cmake_policy(SET CMP0054 NEW)
 endif()
 if (NOT DEFINED CMAKE_RUNTIME_OUTPUT_DIRECTORY)
-    set(CMAKE_RUNTIME_OUTPUT_DIRECTORY ${CMAKE_SOURCE_DIR}/bin)
-    set(CMAKE_RUNTIME_OUTPUT_DIRECTORY_DEBUG ${CMAKE_SOURCE_DIR}/bin)
-    set(CMAKE_RUNTIME_OUTPUT_DIRECTORY_RELEASE ${CMAKE_SOURCE_DIR}/bin)
-    set(CMAKE_RUNTIME_OUTPUT_DIRECTORY_RELWITHDEBINFO ${CMAKE_SOURCE_DIR}/bin)
+    set(CMAKE_RUNTIME_OUTPUT_DIRECTORY ${CMAKE_SOURCE_DIR}/examples)
+    set(CMAKE_RUNTIME_OUTPUT_DIRECTORY_DEBUG ${CMAKE_SOURCE_DIR}/examples)
+    set(CMAKE_RUNTIME_OUTPUT_DIRECTORY_RELEASE ${CMAKE_SOURCE_DIR}/examples)
+    set(CMAKE_RUNTIME_OUTPUT_DIRECTORY_RELWITHDEBINFO ${CMAKE_SOURCE_DIR}/examples)
 endif()
 
 project(aspromise)
@@ -16,30 +16,32 @@ set(CMAKE_DISABLE_IN_SOURCE_BUILD ON)
 set(CMAKE_CONFIGURATION_TYPES "Debug;Release;RelWithDebInfo")
 		
 file(GLOB_RECURSE SOURCE
-		${PROJECT_SOURCE_DIR}/src/*.inl*
-		${PROJECT_SOURCE_DIR}/src/*.h*
-		${PROJECT_SOURCE_DIR}/src/*.c*
-		${PROJECT_SOURCE_DIR}/src/*.cc*
-		${PROJECT_SOURCE_DIR}/src/*.hpp*
-		${PROJECT_SOURCE_DIR}/src/*.cpp*
-		${PROJECT_SOURCE_DIR}/src/*.hxx*
-		${PROJECT_SOURCE_DIR}/src/*.cxx*)
+		${PROJECT_SOURCE_DIR}/examples/*.inl*
+		${PROJECT_SOURCE_DIR}/examples/*.h*
+		${PROJECT_SOURCE_DIR}/examples/*.c*
+		${PROJECT_SOURCE_DIR}/examples/*.cc*
+		${PROJECT_SOURCE_DIR}/examples/*.hpp*
+		${PROJECT_SOURCE_DIR}/examples/*.cpp*
+		${PROJECT_SOURCE_DIR}/examples/*.hxx*
+		${PROJECT_SOURCE_DIR}/examples/*.cxx*
+		${PROJECT_SOURCE_DIR}/examples/*.as)
+list(APPEND SOURCE "${PROJECT_SOURCE_DIR}/src/aspromise.hpp")
 if (MSVC)
 	if (CMAKE_SIZEOF_VOID_P EQUAL 8)
 		if(${CMAKE_SYSTEM_PROCESSOR} MATCHES "^arm64")
-			list(APPEND SOURCE "${PROJECT_SOURCE_DIR}/src/angelscript/source/as_callfunc_arm64_msvc.asm")
+			list(APPEND SOURCE "${PROJECT_SOURCE_DIR}/examples/angelscript/source/as_callfunc_arm64_msvc.asm")
 		else()
-			list(APPEND SOURCE "${PROJECT_SOURCE_DIR}/src/angelscript/source/as_callfunc_x64_msvc_asm.asm")
+			list(APPEND SOURCE "${PROJECT_SOURCE_DIR}/examples/angelscript/source/as_callfunc_x64_msvc_asm.asm")
 		endif()
 	elseif (${CMAKE_SYSTEM_PROCESSOR} MATCHES "arm")
-		list(APPEND SOURCE "${PROJECT_SOURCE_DIR}/src/angelscript/source/as_callfunc_arm_msvc.asm")
+		list(APPEND SOURCE "${PROJECT_SOURCE_DIR}/examples/angelscript/source/as_callfunc_arm_msvc.asm")
 	endif()
 elseif(${CMAKE_SYSTEM_PROCESSOR} MATCHES "^arm")
-	list(APPEND SOURCE "${PROJECT_SOURCE_DIR}/src/angelscript/source/as_callfunc_arm_gcc.S")
-	list(APPEND SOURCE "${PROJECT_SOURCE_DIR}/src/angelscript/source/as_callfunc_arm_vita.S")
-	list(APPEND SOURCE "${PROJECT_SOURCE_DIR}/angelscript/source/as_callfunc_arm_xcode.S")
+	list(APPEND SOURCE "${PROJECT_SOURCE_DIR}/examples/angelscript/source/as_callfunc_arm_gcc.S")
+	list(APPEND SOURCE "${PROJECT_SOURCE_DIR}/examples/angelscript/source/as_callfunc_arm_vita.S")
+	list(APPEND SOURCE "${PROJECT_SOURCE_DIR}/examples/angelscript/source/as_callfunc_arm_xcode.S")
 elseif(${CMAKE_SYSTEM_PROCESSOR} MATCHES "^aarch64")
-	list(APPEND SOURCE "${PROJECT_SOURCE_DIR}/src/angelscript/source/as_callfunc_arm64_gcc.S")
+	list(APPEND SOURCE "${PROJECT_SOURCE_DIR}/examples/angelscript/source/as_callfunc_arm64_gcc.S")
 endif()
 foreach(ITEM IN ITEMS ${SOURCE})
     get_filename_component(ITEM_PATH "${ITEM}" PATH)
@@ -90,8 +92,8 @@ if (NOT MSVC)
 elseif (CMAKE_SIZEOF_VOID_P EQUAL 8)
 	enable_language(ASM_MASM)
 endif()
-target_include_directories(aspromise PRIVATE ${PROJECT_SOURCE_DIR}/src/angelscript/include)
-target_include_directories(aspromise PRIVATE ${PROJECT_SOURCE_DIR}/src/angelscript/source)
+target_include_directories(aspromise PRIVATE ${PROJECT_SOURCE_DIR}/examples/angelscript/include)
+target_include_directories(aspromise PRIVATE ${PROJECT_SOURCE_DIR}/examples/angelscript/source)
 target_compile_definitions(aspromise PRIVATE
         -DANGELSCRIPT_EXPORT
         -DAS_USE_STLNAMES)
