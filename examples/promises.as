@@ -31,7 +31,8 @@ void main()
         print_resolve_timeout_async(Value);
     });
 
-    co_await indirect_timer; // Can be both awaited and callback fired at the same time
+    /* Can be both awaited and callback fired at the same time */
+    co_await indirect_timer;
 
     print_set_timeout(1000);
     co_await set_timeout(1000);

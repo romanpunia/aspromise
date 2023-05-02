@@ -29,7 +29,7 @@ Promise awaiting using callbacks
 ## Example usage with C++
 Promise creation
 ```cpp
-    SeqAsPromise<int>* Result = SeqAsPromise::Create();
+    SeqAsPromise<int>* Result = SeqAsPromise<int>::Create();
 ```
 
 Promise settlement
@@ -41,7 +41,7 @@ Promise settlement
 Promise awaiting using wait
 ```cpp
     int32_t Number;
-    Result->Retrieve(&Number, asTYPEID_INT32);
+    Result->WaitIf()->Retrieve(&Number, asTYPEID_INT32);
 ```
 
 Promise awaiting using callbacks

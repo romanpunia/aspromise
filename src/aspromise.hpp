@@ -525,15 +525,31 @@ public:
 		while (Offset < Size)
 		{
 			char U = Code[Offset];
-			if (U != '\"' && U != '\'')
+			if (U == '/' && Offset + 1 < Size && Code[Offset + 1] == '/' || Code[Offset + 1] == '*')
 			{
-				if (Size - Offset < MatchSize || memcmp(Code + Offset, Match, MatchSize) != 0)
+				if (Code[++Offset] == '*')
 				{
-					++Offset;
-					continue;
+					while (Offset + 1 < Size)
+					{
+						char N1 = Code[Offset++];
+						char N2 = Code[Offset++];
+						if (N1 == '*' && N2 == '/')
+							break;
+					}
 				}
+				else
+				{
+					while (Offset < Size)
+					{
+						char N = Code[Offset++];
+						if (N == '\r' || N == '\n')
+							break;
+					}
+				}
+
+				continue;
 			}
-			else
+			else if (U == '\"' || U == '\'')
 			{
 				++Offset;
 				while (Offset < Size)
@@ -542,6 +558,11 @@ public:
 						break;
 				}
 
+				continue;
+			}
+			else if (Size - Offset < MatchSize || memcmp(Code + Offset, Match, MatchSize) != 0)
+			{
+				++Offset;
 				continue;
 			}
 
@@ -578,39 +599,25 @@ public:
 
 			if (End - Start > 0)
 			{
-				/*
-					Naive basic_string assign, replaces
-					part of input text with generated code
-					like this: text <new-code> text
-				*/
-				size_t RightSize = Size - Offset;
-				char* Right = (char*)asAllocMem(RightSize);
-				memcpy(Right, Code + End, RightSize);
-
-				size_t ExpressionSize = (End - Start);
-				const char GeneratorText[] = "." PROMISE_YIELD "()." PROMISE_UNWRAP "()";
-				size_t MiddleSize = ExpressionSize + sizeof(GeneratorText) - 1;
-				char* Middle = (char*)asAllocMem(MiddleSize);
-				memcpy(Middle, Code + Start, MiddleSize);
-				memcpy(Middle + ExpressionSize, GeneratorText, sizeof(GeneratorText) - 1);
-
+				const char Generator[] = "." PROMISE_YIELD "()." PROMISE_UNWRAP "()";
+				char* Left = Code, *Middle = Code + Start, *Right = Code + End;
 				size_t LeftSize = Offset;
-				char* Left = (char*)asAllocMem(LeftSize + 1);
-				memcpy(Left, Code, LeftSize);
-				Left[LeftSize++] = '\0';
+				size_t MiddleSize = End - Start;
+				size_t GeneratorSize = sizeof(Generator) - 1;
+				size_t RightSize = Size - Offset;
+				size_t SubstringSize = LeftSize + MiddleSize + GeneratorSize + RightSize;
 
-				char* Substring = (char*)asAllocMem(LeftSize + MiddleSize + RightSize);
+				char* Substring = (char*)asAllocMem(SubstringSize + 1);
 				memcpy(Substring, Left, LeftSize);
-				memcpy(Substring + LeftSize - 1, Middle, MiddleSize);
-				memcpy(Substring + LeftSize + MiddleSize - 1, Right, RightSize);
-				asFreeMem(Left);
-				asFreeMem(Middle);
-				asFreeMem(Right);
+				memcpy(Substring + LeftSize, Middle, MiddleSize);
+				memcpy(Substring + LeftSize + MiddleSize, Generator, GeneratorSize);
+				memcpy(Substring + LeftSize + MiddleSize + GeneratorSize, Right, RightSize);
+				Substring[SubstringSize] = '\0';
 				asFreeMem(Code);
 
 				Code = Substring;
 				Size = strlen(Code);
-				Offset += MiddleSize;
+				Offset += MiddleSize + GeneratorSize;
 			}
 			else
 				Offset = End;
