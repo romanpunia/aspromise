@@ -3,6 +3,7 @@
 #ifndef PROMISE_CONFIG
 #define PROMISE_CONFIG
 #define PROMISE_TYPENAME "promise" // promise type
+#define PROMISE_VOIDPOSTFIX "_v" // promise<void> type (promise_v)
 #define PROMISE_WRAP "wrap" // promise setter function
 #define PROMISE_UNWRAP "unwrap" // promise getter function
 #define PROMISE_YIELD "yield" // promise awaiter function
@@ -11,6 +12,7 @@
 #define PROMISE_PENDING "pending" // promise status checker
 #define PROMISE_AWAIT "co_await" // keyword for await (C++20 coroutines one love)
 #define PROMISE_USERID 559 // promise user data identifier (any value)
+#define PROMISE_NULLID -1 // empty promise type id
 #define PROMISE_CALLBACKS true // allow <when> listener
 #endif
 #ifndef NDEBUG
@@ -60,29 +62,31 @@ private:
 			void* Object;
 		};
 
-		int TypeId;
+		int TypeId = PROMISE_NULLID;
 	};
-
+#if PROMISE_CALLBACKS
+	/* Callbacks storage */
 	struct
 	{
 		std::function<void(AsPromise<Executor>*)> Native;
 		asIScriptFunction* Wrapper = nullptr;
 	} Callbacks;
-
+#else
+	std::condition_variable Ready;
+#endif
 private:
 	asIScriptEngine* Engine;
 	asIScriptContext* Context;
+	std::atomic<int> RefCount;
 	std::mutex Update;
 	Dynamic Value;
-	int RefCount;
-	bool Marked;
 
 public:
 	/* Thread safe release */
 	void Release()
 	{
-		Marked = false;
-		if (asAtomicDec(RefCount) <= 0)
+		RefCount &= 0x7FFFFFFF;
+		if (--RefCount <= 0)
 		{
 			ReleaseReferences(nullptr);
 			this->~AsPromise();
@@ -92,8 +96,7 @@ public:
 	/* Thread safe add reference */
 	void AddRef()
 	{
-		Marked = false;
-		asAtomicInc(RefCount);
+		RefCount = (RefCount & 0x7FFFFFFF) + 1;
 	}
 	/* For garbage collector to detect references */
 	void EnumReferences(asIScriptEngine* OtherEngine)
@@ -110,9 +113,10 @@ public:
 			if (Type != nullptr)
 				OtherEngine->GCEnumCallback(Type);
 		}
-
+#if PROMISE_CALLBACKS
 		if (Callbacks.Wrapper != nullptr)
 			OtherEngine->GCEnumCallback(Callbacks.Wrapper);
+#endif
 	}
 	/* For garbage collector to release references */
 	void ReleaseReferences(asIScriptEngine*)
@@ -125,13 +129,13 @@ public:
 				Type->Release();
 			Clean();
 		}
-
+#if PROMISE_CALLBACKS
 		if (Callbacks.Wrapper != nullptr)
 		{
 			Callbacks.Wrapper->Release();
 			Callbacks.Wrapper = nullptr;
 		}
-
+#endif
 		if (Context != nullptr)
 		{
 			Context->Release();
@@ -141,52 +145,45 @@ public:
 	/* For garbage collector to mark */
 	void SetFlag()
 	{
-		Marked = true;
+		RefCount |= 0x80000000;
 	}
 	/* For garbage collector to check mark */
 	bool GetFlag()
 	{
-		return Marked;
+		return (RefCount & 0x80000000) ? true : false;
 	}
 	/* For garbage collector to check reference count */
 	int GetRefCount()
 	{
-		return RefCount;
+		return (RefCount & 0x7FFFFFFF);
 	}
 	/* Receive stored type id of future value */
 	int GetTypeIdOfObject()
 	{
 		return Value.TypeId;
 	}
-	/* Thread safe retrieve function, also non-blocking, another syntax is used */
-	void* GetAddressOfObject()
-	{
-		if (Value.TypeId == asTYPEID_VOID)
-			return nullptr;
-
-		if (Value.TypeId & asTYPEID_OBJHANDLE)
-			return &Value.Object;
-		else if (Value.TypeId & asTYPEID_MASK_OBJECT)
-			return Value.Object;
-		else if (Value.TypeId <= asTYPEID_DOUBLE || Value.TypeId & asTYPEID_MASK_SEQNBR)
-			return &Value.Integer;
-
-		return nullptr;
-	}
 	/* Provide a native callback that should be fired when promise will be settled */
 	void When(std::function<void(AsPromise<Executor>*)>&& NewCallback)
 	{
+#if PROMISE_CALLBACKS
 		Callbacks.Native = std::move(NewCallback);
+#else
+		PROMISE_ASSERT(false, "native callback binder for <when> is not allowed");
+#endif
 	}
 	/* Provide a script callback that should be fired when promise will be settled */
 	void When(asIScriptFunction* NewCallback)
 	{
+#if PROMISE_CALLBACKS
 		if (Callbacks.Wrapper != nullptr)
 			Callbacks.Wrapper->Release();
 		
 		Callbacks.Wrapper = NewCallback;
 		if (Callbacks.Wrapper != nullptr)
 			Callbacks.Wrapper->AddRef();
+#else
+		PROMISE_ASSERT(false, "script callback binder for <when> is not allowed");
+#endif
 	}
 	/*
 		Thread safe store function, this is used as promise resolver function,
@@ -196,12 +193,12 @@ public:
 	void Store(void* RefPointer, int RefTypeId)
 	{
 		Update.lock();
-		PROMISE_ASSERT(Value.TypeId == asTYPEID_VOID, "promise should be settled only once");
+		PROMISE_ASSERT(Value.TypeId == PROMISE_NULLID, "promise should be settled only once");
 		PROMISE_ASSERT(RefPointer != nullptr, "input pointer should not be null");
 		PROMISE_ASSERT(Engine != nullptr, "promise is malformed (engine is null)");
 		PROMISE_ASSERT(Context != nullptr, "promise is malformed (context is null)");
 
-		if (Value.TypeId != asTYPEID_VOID)
+		if (Value.TypeId != PROMISE_NULLID)
 		{
 			asIScriptContext* ThisContext = asGetActiveContext();
 			if (!ThisContext)
@@ -239,8 +236,8 @@ public:
 			Context->SetUserData(nullptr, PROMISE_USERID);
 
 		bool WantsResume = (Context->GetState() != asEXECUTION_ACTIVE && SuspendOwned);
+#if PROMISE_CALLBACKS
 		Update.unlock();
-
 		if (Callbacks.Native != nullptr)
 		{
 			Callbacks.Native(this);
@@ -254,7 +251,10 @@ public:
 			Callbacks.Wrapper->Release();
 			Callbacks.Wrapper = nullptr;
 		}
-
+#else
+		Ready.notify_all();
+		Update.unlock();
+#endif
 		if (WantsResume)
 			Executor()(this, Context);
 		else if (SuspendOwned)
@@ -267,12 +267,17 @@ public:
 		PROMISE_ASSERT(TypeName != nullptr, "typename should not be null");
 		Store(RefPointer, Engine->GetTypeIdByDecl(TypeName));
 	}
+	/* Thread safe store function, for promise<void> */
+	void StoreVoid()
+	{
+		Store(nullptr, asTYPEID_VOID);
+	}
 	/* Thread safe retrieve function, non-blocking try-retrieve future value */
 	bool Retrieve(void* RefPointer, int RefTypeId)
 	{
 		PROMISE_ASSERT(Engine != nullptr, "promise is malformed (engine is null)");
 		PROMISE_ASSERT(RefPointer != nullptr, "output pointer should not be null");
-		if (Value.TypeId == asTYPEID_VOID)
+		if (Value.TypeId == PROMISE_NULLID)
 			return false;
 
 		if (RefTypeId & asTYPEID_OBJHANDLE)
@@ -312,10 +317,29 @@ public:
 
 		return false;
 	}
+	/* Thread safe retrieve function, also non-blocking, another syntax is used */
+	void* Retrieve()
+	{
+		if (Value.TypeId == PROMISE_NULLID)
+			return nullptr;
+
+		if (Value.TypeId & asTYPEID_OBJHANDLE)
+			return &Value.Object;
+		else if (Value.TypeId & asTYPEID_MASK_OBJECT)
+			return Value.Object;
+		else if (Value.TypeId <= asTYPEID_DOUBLE || Value.TypeId & asTYPEID_MASK_SEQNBR)
+			return &Value.Integer;
+
+		return nullptr;
+	}
+	/* Thread safe retrieve function, no-op */
+	void RetrieveVoid()
+	{
+	}
 	/* Can be used to check if promise is still pending */
 	bool IsPending()
 	{
-		return Value.TypeId == asTYPEID_VOID;
+		return Value.TypeId == PROMISE_NULLID;
 	}
 	/*
 		This function should be called before retrieving the value
@@ -326,7 +350,7 @@ public:
 	AsPromise* YieldIf()
 	{
 		std::unique_lock<std::mutex> Unique(Update);
-		if (Value.TypeId == asTYPEID_VOID && Context != nullptr)
+		if (Value.TypeId == PROMISE_NULLID && Context != nullptr)
 		{
 			AddRef();
 			Context->SetUserData(this, PROMISE_USERID);
@@ -348,12 +372,17 @@ public:
 		AddRef();
 		{
 			std::unique_lock<std::mutex> Unique(Update);
+#if PROMISE_CALLBACKS
 			if (IsPending())
 			{
 				std::condition_variable Ready;
 				Callbacks.Native = [&Ready](AsPromise<Executor>*) { Ready.notify_all(); };
 				Ready.wait(Unique, [this]() { return !IsPending(); });
 			}
+#else
+			if (IsPending())
+				Ready.wait(Unique, [this]() { return !IsPending(); });
+#endif
 		}
 		Release();
 		return this;
@@ -364,7 +393,7 @@ private:
 		Construct a promise, notify GC, set value to none,
 		grab a reference to script context
 	*/
-	AsPromise(asIScriptContext* NewContext) noexcept : Engine(nullptr), Context(NewContext), RefCount(1), Marked(false)
+	AsPromise(asIScriptContext* NewContext) noexcept : Engine(nullptr), Context(NewContext), RefCount(1)
 	{
 		PROMISE_ASSERT(Context != nullptr, "context should not be null");
 		Context->AddRef();
@@ -376,6 +405,7 @@ private:
 	void Clean()
 	{
 		memset(&Value, 0, sizeof(Value));
+		Value.TypeId = PROMISE_NULLID;
 	}
 
 public:
@@ -392,6 +422,11 @@ public:
 			Future->Store(_Ref, TypeId);
 
 		return Future;
+	}
+	/* AsPromise creation function, for use within AngelScript (void promise) */
+	static AsPromise* CreateFactoryVoid(void* _Ref, int TypeId)
+	{
+		return Create();
 	}
 	/* Template callback function for compiler, copy-paste from <array> class */
 	static bool TemplateCallback(asITypeInfo* Info, bool& DontGarbageCollect)
@@ -480,6 +515,7 @@ public:
 	}
 	/*
 		Interface registration, note: promise<void> is not supported,
+		instead use promise_v when internal datatype is not intended,
 		promise will be an object handle with GC behaviours, default
 		constructed promise will be pending otherwise early settled
 	*/
@@ -498,12 +534,29 @@ public:
 		PROMISE_CHECK(Engine->RegisterObjectBehaviour(PROMISE_TYPENAME "<T>", asBEHAVE_ENUMREFS, "void f(int&in)", asMETHOD(Type, EnumReferences), asCALL_THISCALL));
 		PROMISE_CHECK(Engine->RegisterObjectBehaviour(PROMISE_TYPENAME "<T>", asBEHAVE_RELEASEREFS, "void f(int&in)", asMETHOD(Type, ReleaseReferences), asCALL_THISCALL));
 		PROMISE_CHECK(Engine->RegisterObjectMethod(PROMISE_TYPENAME "<T>", "void " PROMISE_WRAP "(?&in)", asMETHODPR(Type, Store, (void*, int), void), asCALL_THISCALL));
-		PROMISE_CHECK(Engine->RegisterObjectMethod(PROMISE_TYPENAME "<T>", "T& " PROMISE_UNWRAP "()", asMETHODPR(Type, GetAddressOfObject, (), void*), asCALL_THISCALL));
+		PROMISE_CHECK(Engine->RegisterObjectMethod(PROMISE_TYPENAME "<T>", "T& " PROMISE_UNWRAP "()", asMETHODPR(Type, Retrieve, (), void*), asCALL_THISCALL));
 		PROMISE_CHECK(Engine->RegisterObjectMethod(PROMISE_TYPENAME "<T>", PROMISE_TYPENAME "<T>@+ " PROMISE_YIELD "()", asMETHOD(Type, YieldIf), asCALL_THISCALL));
 		PROMISE_CHECK(Engine->RegisterObjectMethod(PROMISE_TYPENAME "<T>", "bool " PROMISE_PENDING "()", asMETHOD(Type, IsPending), asCALL_THISCALL));
 #if PROMISE_CALLBACKS
 		PROMISE_CHECK(Engine->RegisterFuncdef("void " PROMISE_TYPENAME "<T>::" PROMISE_EVENT "(T&in)"));
 		PROMISE_CHECK(Engine->RegisterObjectMethod(PROMISE_TYPENAME "<T>", "void " PROMISE_WHEN "(" PROMISE_EVENT "@+)", asMETHODPR(Type, When, (asIScriptFunction*), void), asCALL_THISCALL));
+#endif
+		PROMISE_CHECK(Engine->RegisterObjectType(PROMISE_TYPENAME PROMISE_VOIDPOSTFIX, 0, asOBJ_REF | asOBJ_GC));
+		PROMISE_CHECK(Engine->RegisterObjectBehaviour(PROMISE_TYPENAME PROMISE_VOIDPOSTFIX, asBEHAVE_FACTORY, PROMISE_TYPENAME PROMISE_VOIDPOSTFIX "@ f()", asFUNCTION(Type::CreateFactoryVoid), asCALL_CDECL));
+		PROMISE_CHECK(Engine->RegisterObjectBehaviour(PROMISE_TYPENAME PROMISE_VOIDPOSTFIX, asBEHAVE_ADDREF, "void f()", asMETHOD(Type, AddRef), asCALL_THISCALL));
+		PROMISE_CHECK(Engine->RegisterObjectBehaviour(PROMISE_TYPENAME PROMISE_VOIDPOSTFIX, asBEHAVE_RELEASE, "void f()", asMETHOD(Type, Release), asCALL_THISCALL));
+		PROMISE_CHECK(Engine->RegisterObjectBehaviour(PROMISE_TYPENAME PROMISE_VOIDPOSTFIX, asBEHAVE_SETGCFLAG, "void f()", asMETHOD(Type, SetFlag), asCALL_THISCALL));
+		PROMISE_CHECK(Engine->RegisterObjectBehaviour(PROMISE_TYPENAME PROMISE_VOIDPOSTFIX, asBEHAVE_GETGCFLAG, "bool f()", asMETHOD(Type, GetFlag), asCALL_THISCALL));
+		PROMISE_CHECK(Engine->RegisterObjectBehaviour(PROMISE_TYPENAME PROMISE_VOIDPOSTFIX, asBEHAVE_GETREFCOUNT, "int f()", asMETHOD(Type, GetRefCount), asCALL_THISCALL));
+		PROMISE_CHECK(Engine->RegisterObjectBehaviour(PROMISE_TYPENAME PROMISE_VOIDPOSTFIX, asBEHAVE_ENUMREFS, "void f(int&in)", asMETHOD(Type, EnumReferences), asCALL_THISCALL));
+		PROMISE_CHECK(Engine->RegisterObjectBehaviour(PROMISE_TYPENAME PROMISE_VOIDPOSTFIX, asBEHAVE_RELEASEREFS, "void f(int&in)", asMETHOD(Type, ReleaseReferences), asCALL_THISCALL));
+		PROMISE_CHECK(Engine->RegisterObjectMethod(PROMISE_TYPENAME PROMISE_VOIDPOSTFIX, "void " PROMISE_WRAP "()", asMETHODPR(Type, StoreVoid, (), void), asCALL_THISCALL));
+		PROMISE_CHECK(Engine->RegisterObjectMethod(PROMISE_TYPENAME PROMISE_VOIDPOSTFIX, "void " PROMISE_UNWRAP "()", asMETHODPR(Type, RetrieveVoid, (), void), asCALL_THISCALL));
+		PROMISE_CHECK(Engine->RegisterObjectMethod(PROMISE_TYPENAME PROMISE_VOIDPOSTFIX, PROMISE_TYPENAME PROMISE_VOIDPOSTFIX "@+ " PROMISE_YIELD "()", asMETHOD(Type, YieldIf), asCALL_THISCALL));
+		PROMISE_CHECK(Engine->RegisterObjectMethod(PROMISE_TYPENAME PROMISE_VOIDPOSTFIX, "bool " PROMISE_PENDING "()", asMETHOD(Type, IsPending), asCALL_THISCALL));
+#if PROMISE_CALLBACKS
+		PROMISE_CHECK(Engine->RegisterFuncdef("void " PROMISE_TYPENAME PROMISE_VOIDPOSTFIX "::" PROMISE_EVENT "()"));
+		PROMISE_CHECK(Engine->RegisterObjectMethod(PROMISE_TYPENAME PROMISE_VOIDPOSTFIX, "void " PROMISE_WHEN "(" PROMISE_EVENT "@+)", asMETHODPR(Type, When, (asIScriptFunction*), void), asCALL_THISCALL));
 #endif
 	}
 	/*
@@ -663,7 +716,7 @@ struct SeqAsExecutor
 		asIScriptContext* Context = ThisContext->GetEngine()->CreateContext();
 		PROMISE_ASSERT(Context != nullptr, "context creation is not possible");
 		PROMISE_CHECK(Context->Prepare(Callback));
-		PROMISE_CHECK(Context->SetArgAddress(0, Promise->GetAddressOfObject()));
+		PROMISE_CHECK(Context->SetArgAddress(0, Promise->Retrieve()));
 		Context->Execute();
 		Context->Release();
 		Promise->Release();

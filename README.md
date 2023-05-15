@@ -8,6 +8,7 @@ Drag and drop __promise.hpp__ somewhere into your project.
 Promise creation
 ```as
     promise<int>@ result = promise<int>();
+    // promise<void> = promise_v
 ```
 
 Promise settlement
