@@ -194,7 +194,7 @@ public:
 	{
 		Update.lock();
 		PROMISE_ASSERT(Value.TypeId == PROMISE_NULLID, "promise should be settled only once");
-		PROMISE_ASSERT(RefPointer != nullptr, "input pointer should not be null");
+		PROMISE_ASSERT(RefPointer != nullptr || RefTypeId == asTYPEID_VOID, "input pointer should not be null");
 		PROMISE_ASSERT(Engine != nullptr, "promise is malformed (engine is null)");
 		PROMISE_ASSERT(Context != nullptr, "promise is malformed (context is null)");
 
