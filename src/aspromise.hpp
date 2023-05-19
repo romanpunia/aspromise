@@ -584,9 +584,8 @@ public:
 				{
 					while (Offset + 1 < Size)
 					{
-						char N1 = Code[Offset++];
-						char N2 = Code[Offset++];
-						if (N1 == '*' && N2 == '/')
+						char N = Code[Offset++];
+						if (N == '*' && Code[Offset++] == '/')
 							break;
 					}
 				}
