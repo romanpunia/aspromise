@@ -578,7 +578,7 @@ public:
 		while (Offset < Size)
 		{
 			char U = Code[Offset];
-			if (U == '/' && Offset + 1 < Size && Code[Offset + 1] == '/' || Code[Offset + 1] == '*')
+			if (U == '/' && Offset + 1 < Size && (Code[Offset + 1] == '/' || Code[Offset + 1] == '*'))
 			{
 				if (Code[++Offset] == '*')
 				{
