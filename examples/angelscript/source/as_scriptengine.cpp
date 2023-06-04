@@ -1,6 +1,6 @@
 /*
    AngelCode Scripting Library
-   Copyright (c) 2003-2022 Andreas Jonsson
+   Copyright (c) 2003-2023 Andreas Jonsson
 
    This software is provided 'as-is', without any express or implied
    warranty. In no event will the authors be held liable for any
@@ -1099,6 +1099,7 @@ asSNameSpace *asCScriptEngine::AddNameSpace(const char *name)
 	}
 	ns->name = name;
 
+	// TODO: thread-safety: This can potentially be called from multiple threads so it must be protected with critical section
 	nameSpaces.PushLast(ns);
 
 	return ns;
@@ -1677,7 +1678,7 @@ int asCScriptEngine::RegisterObjectType(const char *name, int byteSize, asDWORD 
 {
 	int r;
 
-	isPrepared = false;
+	isPrepared = false; // TODO: Only set this after the validations have been completed, to avoid unnecessary Prepare in case no change was made
 
 	// Verify flags
 	// Must have either asOBJ_REF or asOBJ_VALUE
@@ -1939,10 +1940,12 @@ int asCScriptEngine::RegisterObjectType(const char *name, int byteSize, asDWORD 
 			type->name       = dt.GetTypeInfo()->name;
 			// The namespace will be the same as the original template type
 			type->nameSpace  = dt.GetTypeInfo()->nameSpace;
-			type->templateSubTypes.PushLast(dt.GetSubType());
-			for( asUINT s = 0; s < type->templateSubTypes.GetLength(); s++ )
-				if( type->templateSubTypes[s].GetTypeInfo() )
+			for (asUINT s = 0; s < dt.GetTypeInfo()->GetSubTypeCount(); s++)
+			{
+				type->templateSubTypes.PushLast(dt.GetSubType(s));
+				if (type->templateSubTypes[s].GetTypeInfo())
 					type->templateSubTypes[s].GetTypeInfo()->AddRefInternal();
+			}
 			type->size       = byteSize;
 #ifdef WIP_16BYTE_ALIGN
 			// TODO: Types smaller than 4 don't need to be aligned to 4 byte boundaries
@@ -2040,7 +2043,7 @@ int asCScriptEngine::RegisterBehaviourToObjectType(asCObjectType *objectType, as
 		}
 	}
 
-	isPrepared = false;
+	isPrepared = false; // TODO: Only set this after the validations have been completed, to avoid unnecessary Prepare in case no change was made
 
 	asSTypeBehaviour *beh = &objectType->beh;
 
@@ -2820,7 +2823,7 @@ int asCScriptEngine::RegisterMethodToObjectType(asCObjectType *objectType, const
 		}
 	}
 
-	isPrepared = false;
+	isPrepared = false; // TODO: Only set this after the validations have been completed, to avoid unnecessary Prepare in case no change was made
 
 	// Put the system function in the list of system functions
 	asSSystemFunctionInterface *newInterface = asNEW(asSSystemFunctionInterface)(internal);
@@ -2945,7 +2948,7 @@ int asCScriptEngine::RegisterGlobalFunction(const char *declaration, const asSFu
 	if( r < 0 )
 		return ConfigError(r, "RegisterGlobalFunction", declaration, 0);
 
-	isPrepared = false;
+	isPrepared = false; // TODO: Only set this after the validations have been completed, to avoid unnecessary Prepare in case no change was made
 
 	// Put the system function in the list of system functions
 	asSSystemFunctionInterface *newInterface = asNEW(asSSystemFunctionInterface)(internal);
@@ -3480,7 +3483,7 @@ asCObjectType *asCScriptEngine::GetTemplateInstanceType(asCObjectType *templateT
 	else
 	{
 		// If the template type is not requested directly from a module, then set the ownership
-		// of it to the same module as one of the subtypes. If none of the subtypes are owned by]
+		// of it to the same module as one of the subtypes. If none of the subtypes are owned by
 		// any module, the template instance will be without ownership and can be removed from the
 		// engine at any time (unless the application holds an external reference).
 		for( n = 0; n < subTypes.GetLength(); n++ )
@@ -4966,9 +4969,10 @@ const char *asCScriptEngine::GetTypeDeclaration(int typeId, bool includeNamespac
 {
 	asCDataType dt = GetDataTypeFromTypeId(typeId);
 
-	asCString *tempString = &asCThreadManager::GetLocalData()->string;
-	*tempString = dt.Format(defaultNamespace, includeNamespace);
+	asCString str = dt.Format(defaultNamespace, includeNamespace);
 
+	asCString *tempString = &asCThreadManager::GetLocalData()->string;
+	*tempString = str;
 	return tempString->AddressOf();
 }
 

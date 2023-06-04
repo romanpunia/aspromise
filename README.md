@@ -78,6 +78,7 @@ This implementation supports important feature in my opinion: __co_await__ keywo
     co_await future; // future could be a function call
     co_await  (    future    );
     co_await (future);
+    co_await future[0].send_data(); // if future is an array
     auto@ response = (co_await future) + "output"; // if http_response has plus op
     if ((co_await (future)).status == 200);
     while ((co_await future).is_socket_reading);

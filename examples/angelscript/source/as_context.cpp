@@ -1,6 +1,6 @@
 /*
    AngelCode Scripting Library
-   Copyright (c) 2003-2022 Andreas Jonsson
+   Copyright (c) 2003-2023 Andreas Jonsson
 
    This software is provided 'as-is', without any express or implied
    warranty. In no event will the authors be held liable for any
@@ -53,13 +53,6 @@
 #endif
 
 BEGIN_AS_NAMESPACE
-
-// We need at least 2 PTRs reserved for exception handling
-// We need at least 1 PTR reserved for calling system functions
-const int RESERVE_STACK = 2*AS_PTR_SIZE;
-
-// For each script function call we push 9 PTRs on the call stack
-const int CALLSTACK_FRAME_SIZE = 9;
 
 #if defined(AS_DEBUG)
 
@@ -2920,40 +2913,20 @@ void asCContext::ExecuteNext()
 					m_regs.programPointer += 2;
 					CallScriptFunction(func);
 				}
-				else if( func->funcType == asFUNC_DELEGATE )
+				else if( func->funcType == asFUNC_SYSTEM )
 				{
-					// Push the object pointer on the stack. There is always a reserved space for this so
-					// we don't don't need to worry about overflowing the allocated memory buffer
-					asASSERT( m_regs.stackPointer - AS_PTR_SIZE >= m_stackBlocks[m_stackIndex] );
-					m_regs.stackPointer -= AS_PTR_SIZE;
-					*(asPWORD*)m_regs.stackPointer = asPWORD(func->objForDelegate);
-
-					// Call the delegated method
-					if( func->funcForDelegate->funcType == asFUNC_SYSTEM )
-					{
-						m_regs.stackPointer += CallSystemFunction(func->funcForDelegate->id, this);
-
-						// Update program position after the call so the line number
-						// is correct in case the system function queries it
-						m_regs.programPointer += 2;
-					}
-					else
-					{
-						m_regs.programPointer += 2;
-
-						// TODO: run-time optimize: The true method could be figured out when creating the delegate
-						CallInterfaceMethod(func->funcForDelegate);
-					}
-				}
-				else
-				{
-					asASSERT( func->funcType == asFUNC_SYSTEM );
-
 					m_regs.stackPointer += CallSystemFunction(func->id, this);
 
 					// Update program position after the call so the line number
 					// is correct in case the system function queries it
 					m_regs.programPointer += 2;
+				}
+				else
+				{
+					asASSERT(func->funcType == asFUNC_DELEGATE);
+
+					// Delegates cannot be bound to imported functions as the delegates do not have a function id
+					asASSERT(false);
 				}
 			}
 
@@ -6074,7 +6047,7 @@ asDWORD *asCContext::DeserializeStackPointer(asDWORD v)
 {
 	// TODO: This function should find the correct stack block and then get the address within that stack block. It must not be expected that the same initContextStackSize was used when the stack pointer was serialized
 	int block = (v >> (32-6)) & 0x3F;
-	uint32_t offset = v & 0x03FFFFFF;
+	asDWORD offset = v & 0x03FFFFFF;
 
 	asASSERT((asUINT)block < m_stackBlocks.GetLength());
 	asASSERT(offset <= m_engine->ep.initContextStackSize*(1 << block));
@@ -6089,13 +6062,13 @@ asDWORD asCContext::SerializeStackPointer(asDWORD *v) const
 	asASSERT(v != 0);
 	asASSERT(m_stackBlocks.GetLength());
 
-	uint64_t min = ~0llu;
+	asQWORD min = ~0llu;
 	int best     = -1;
 
 	// Find the stack block that is used, and the offset into that block
 	for(asUINT i = 0; i < m_stackBlocks.GetLength(); ++i)
 	{
-		uint64_t delta = v - m_stackBlocks[i];
+		asQWORD delta = v - m_stackBlocks[i];
 
 		if(delta < min)
 		{

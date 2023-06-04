@@ -1,6 +1,6 @@
 /*
    AngelCode Scripting Library
-   Copyright (c) 2003-2022 Andreas Jonsson
+   Copyright (c) 2003-2023 Andreas Jonsson
 
    This software is provided 'as-is', without any express or implied
    warranty. In no event will the authors be held liable for any
@@ -1999,7 +1999,6 @@ void asCBuilder::CompleteFuncDef(sFuncDef *funcDef)
 				fdt2->funcdef->IsSignatureExceptNameEqual(func) )
 			{
 				// Replace our funcdef for the existing one
-				funcDef->idx = fdt2->funcdef->id;
 				module->ReplaceFuncDef(fdt, fdt2);
 				fdt2->AddRefInternal();
 
@@ -2022,7 +2021,7 @@ void asCBuilder::CompleteFuncDef(sFuncDef *funcDef)
 
 	// Remember if the type was declared as external so the saved bytecode can be flagged accordingly
 	if (funcTraits.GetTrait(asTRAIT_EXTERNAL) && found)
-		module->m_externalTypes.PushLast(engine->scriptFunctions[funcDef->idx]->funcdefType);
+		module->m_externalTypes.PushLast(engine->scriptFunctions[module->m_funcDefs[funcDef->idx]->GetFuncdefSignature()->GetId()]->funcdefType);
 }
 
 int asCBuilder::RegisterGlobalVar(asCScriptNode *node, asCScriptCode *file, asSNameSpace *ns)
@@ -4801,11 +4800,16 @@ asCScriptFunction *asCBuilder::RegisterLambda(asCScriptNode *node, asCScriptCode
 	asCScriptNode *args = node->firstChild;
 	while( args && args->nodeType != snStatementBlock )
 	{
-		if (args->nodeType == snIdentifier)
+		if (args->nodeType == snUndefined)
 		{
-			asCString argName;
-			argName.Assign(&file->code[args->tokenPos], args->tokenLength);
-			parameterNames.PushLast(argName);
+			if (args->lastChild && args->lastChild->nodeType == snIdentifier)
+			{
+				asCString argName;
+				argName.Assign(&file->code[args->lastChild->tokenPos], args->lastChild->tokenLength);
+				parameterNames.PushLast(argName);
+			}
+			else
+				parameterNames.PushLast("");
 			defaultArgs.PushLast(0);
 		}
 		args = args->next;
@@ -5721,10 +5725,21 @@ asSNameSpace *asCBuilder::GetNameSpaceFromNode(asCScriptNode *node, asCScriptCod
 		}
 	}
 
+	// If the scope doesn't start with '::' then prepend the implicit scope to give the full scope
+	asCString originalScope = scope;
+	if (scope.SubString(0, 2) != "::" && implicitNs && implicitNs->name.GetLength() > 0 )
+		scope = implicitNs->name + "::" + scope;
+
 	asCTypeInfo *ti = 0;
-	asSNameSpace *ns = GetNameSpaceByString(scope, implicitNs ? implicitNs : engine->nameSpaces[0], node, script, &ti);
+	asSNameSpace *ns = GetNameSpaceByString(scope, implicitNs ? implicitNs : engine->nameSpaces[0], node, script, &ti, scope == originalScope);
+
+	// If the namespace wasn't found try again with the original scope as it may be a fully identified scope
+	if (scope != originalScope && ns == 0)
+		ns = GetNameSpaceByString(originalScope, implicitNs ? implicitNs : engine->nameSpaces[0], node, script, &ti, true);
+
 	if (ti && objType)
 		*objType = CastToObjectType(ti);
+
 	return ns;
 }
 
@@ -5913,6 +5928,9 @@ asCDataType asCBuilder::CreateDataTypeFromNode(asCScriptNode *node, asCScriptCod
 							}
 							if (isValid)
 								*isValid = false;
+
+							// Return a dummy
+							return asCDataType::CreatePrimitive(ttInt, false);
 						}
 
 						// Create object data type
@@ -5934,6 +5952,9 @@ asCDataType asCBuilder::CreateDataTypeFromNode(asCScriptNode *node, asCScriptCod
 					dt.SetTokenType(ttInt);
 					if (isValid)
 						*isValid = false;
+
+					// Return a dummy
+					return asCDataType::CreatePrimitive(ttInt, false);
 				}
 			}
 
@@ -5996,6 +6017,9 @@ asCDataType asCBuilder::CreateDataTypeFromNode(asCScriptNode *node, asCScriptCod
 						WriteError(TXT_OBJECT_HANDLE_NOT_SUPPORTED, file, n);
 					if (isValid)
 						*isValid = false;
+
+					// Return a dummy
+					return asCDataType::CreatePrimitive(ttInt, false);
 				}
 				isImplicitHandle = false;
 			}
@@ -6018,16 +6042,30 @@ asCDataType asCBuilder::CreateDataTypeFromNode(asCScriptNode *node, asCScriptCod
 				}
 				if (isValid)
 					*isValid = false;
+
+				// Return a dummy
+				return asCDataType::CreatePrimitive(ttInt, false);
 			}
 
 			// Make the type an array (or multidimensional array)
-			if( dt.MakeArray(engine, module) < 0 )
+			// TODO: If reportError is false, the errors in MakeArray must be suppressed
+			asCDataType origDt = dt;
+			int r = dt.MakeArray(engine, module);
+			if( r < 0 )
 			{
-				if( reportError )
+				if (reportError && r == asINVALID_TYPE)
 					WriteError(TXT_NO_DEFAULT_ARRAY_TYPE, file, n);
+				else
+				{
+					asCString msg;
+					msg.Format(TXT_CANNOT_FORM_ARRAY_OF_s, origDt.Format(ns).AddressOf());
+					WriteError(msg, file, n);
+				}
 				if (isValid)
 					*isValid = false;
-				break;
+
+				// Return a dummy
+				return asCDataType::CreatePrimitive(ttInt, false);
 			}
 		}
 		else
@@ -6039,7 +6077,9 @@ asCDataType asCBuilder::CreateDataTypeFromNode(asCScriptNode *node, asCScriptCod
 					WriteError(TXT_HANDLE_OF_HANDLE_IS_NOT_ALLOWED, file, n);
 				if (isValid)
 					*isValid = false;
-				break;
+
+				// Return a dummy
+				return asCDataType::CreatePrimitive(ttInt, false);
 			}
 			else
 			{
@@ -6049,7 +6089,9 @@ asCDataType asCBuilder::CreateDataTypeFromNode(asCScriptNode *node, asCScriptCod
 						WriteError(TXT_OBJECT_HANDLE_NOT_SUPPORTED, file, n);
 					if (isValid)
 						*isValid = false;
-					break;
+
+					// Return a dummy
+					return asCDataType::CreatePrimitive(ttInt, false);
 				}
 				
 				// Check if the handle should be read-only
@@ -6069,6 +6111,9 @@ asCDataType asCBuilder::CreateDataTypeFromNode(asCScriptNode *node, asCScriptCod
 				WriteError(TXT_OBJECT_HANDLE_NOT_SUPPORTED, file, n);
 			if (isValid)
 				*isValid = false;
+
+			// Return a dummy
+			return asCDataType::CreatePrimitive(ttInt, false);
 		}
 	}
 

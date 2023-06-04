@@ -1,6 +1,6 @@
 /*
    AngelCode Scripting Library
-   Copyright (c) 2003-2022 Andreas Jonsson
+   Copyright (c) 2003-2023 Andreas Jonsson
 
    This software is provided 'as-is', without any express or implied 
    warranty. In no event will the authors be held liable for any 
@@ -173,7 +173,8 @@ asCString asCDataType::Format(asSNameSpace *currNs, bool includeNamespace) const
 	{
 		// If funcDef->nameSpace is null it means the funcDef was declared as member of 
 		// another type, in which case the scope should be built with the name of that type
-		str += CastToFuncdefType(typeInfo)->parentClass->name + "::";
+		asCDataType dt = asCDataType::CreateType(CastToFuncdefType(typeInfo)->parentClass, false);
+		str += dt.Format(currNs, includeNamespace) + "::";
 	}
 
 	if( tokenType != ttIdentifier )
@@ -292,6 +293,9 @@ int asCDataType::MakeArray(asCScriptEngine *engine, asCModule *module)
 	asCArray<asCDataType> subTypes;
 	subTypes.PushLast(*this);
 	asCObjectType *at = engine->GetTemplateInstanceType(engine->defaultArrayObjectType, subTypes, module);
+	if (at == 0)
+		return asNOT_SUPPORTED;
+
 	isReadOnly = tmpIsReadOnly;
 
 	isObjectHandle = false;

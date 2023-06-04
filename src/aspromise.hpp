@@ -627,27 +627,35 @@ public:
 				++Start;
 			}
 
-			int32_t Brackets = 0;
-			size_t End = Start;
-			while (End < Size)
-			{
-				char& V = Code[End];
-				if (V == ')')
-				{
-					if (--Brackets < 0)
-						break;
-				}
-				else if (V == '(')
-					++Brackets;
-				else if (V == ';')
-					break;
-				else if (Brackets == 0)
-				{
-					if (!isalnum(V) && V != '.' && V != ' ' && V != '_')
-						break;
-				}
-				End++;
-			}
+            int32_t Indexers = 0;
+            int32_t Brackets = 0;
+            size_t End = Start;
+            while (End < Size)
+            {
+                char& V = Code[End];
+                if (V == ')')
+                {
+                    if (--Brackets < 0)
+                        break;
+                }
+                else if (V == ']')
+                {
+                    if (--Indexers < 0)
+                        break;
+                }
+                else if (V == '(')
+                    ++Brackets;
+                else if (V == '[')
+                    ++Indexers;
+                else if (V == ';')
+                    break;
+                else if (Brackets == 0 && Indexers == 0)
+                {
+                    if (!isalnum(V) && V != '.' && V != ' ' && V != '_')
+                        break;
+                }
+                End++;
+            }
 
 			if (End - Start > 0)
 			{

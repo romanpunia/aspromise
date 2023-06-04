@@ -1,6 +1,6 @@
 /*
    AngelCode Scripting Library
-   Copyright (c) 2003-2022 Andreas Jonsson
+   Copyright (c) 2003-2023 Andreas Jonsson
 
    This software is provided 'as-is', without any express or implied
    warranty. In no event will the authors be held liable for any
@@ -1096,18 +1096,27 @@ void asCReader::ReadFunctionSignature(asCScriptFunction *func, asCObjectType **p
 	}
 
 	func->objectType = CastToObjectType(ReadTypeInfo());
-	if( func->objectType )
+	if (func->objectType)
 	{
 		func->objectType->AddRefInternal();
+		func->nameSpace = func->objectType->nameSpace;
+	}
 
+	// Only read the function traits if it is a class method, or could potentially be a global virtual property
+	if (func->objectType || func->name.SubString(0, 4) == "get_" || func->name.SubString(0, 4) == "set_")
+	{
 		asBYTE b;
 		ReadData(&b, 1);
 		func->SetReadOnly((b & 1) ? true : false);
 		func->SetPrivate((b & 2) ? true : false);
 		func->SetProtected((b & 4) ? true : false);
-		func->nameSpace = func->objectType->nameSpace;
+		func->SetFinal((b & 8) ? true : false);
+		func->SetOverride((b & 16) ? true : false);
+		func->SetExplicit((b & 32) ? true : false);
+		func->SetProperty((b & 64) ? true : false);
 	}
-	else
+
+	if (!func->objectType)
 	{
 		if (func->funcType == asFUNC_FUNCDEF)
 		{
@@ -3634,8 +3643,17 @@ void asCReader::CalculateAdjustmentByPos(asCScriptFunction *func)
 		int pos    = adjustments[n];
 		int adjust = adjustments[n+1];
 
-		for( asUINT i = pos; i < adjustByPos.GetLength(); i++ )
-			adjustByPos[i] += adjust;
+		// If multiple variables in different scope occupy the same position they must have the same size
+		asASSERT(adjustByPos[pos] == 0 || adjustByPos[pos] == adjust);
+
+		adjustByPos[pos] = adjust;
+	}
+	// Accumulate adjustments
+	int adjust = adjustByPos[0];
+	for (asUINT i = 1; i < adjustByPos.GetLength(); i++)
+	{
+		adjust += adjustByPos[i];
+		adjustByPos[i] = adjust;
 	}
 }
 
@@ -4126,15 +4144,21 @@ void asCWriter::WriteFunctionSignature(asCScriptFunction *func)
 
 	WriteTypeInfo(func->objectType);
 
-	if( func->objectType )
+	// Only write function traits for methods and global functions that can potentially be virtual properties
+	if (func->objectType || func->name.SubString(0, 4) == "get_" || func->name.SubString(0, 4) == "set_")
 	{
 		asBYTE b = 0;
 		b += func->IsReadOnly() ? 1 : 0;
 		b += func->IsPrivate() ? 2 : 0;
 		b += func->IsProtected() ? 4 : 0;
+		b += func->IsFinal() ? 8 : 0;
+		b += func->IsOverride() ? 16 : 0;
+		b += func->IsExplicit() ? 32 : 0;
+		b += func->IsProperty() ? 64 : 0;
 		WriteData(&b, 1);
 	}
-	else
+
+	if (!func->objectType)
 	{
 		if (func->funcType == asFUNC_FUNCDEF)
 		{
@@ -4782,21 +4806,31 @@ void asCWriter::CalculateAdjustmentByPos(asCScriptFunction *func)
 		int pos    = adjustments[n];
 		int adjust = adjustments[n+1];
 
-		for( asUINT i = pos; i < adjustStackByPos.GetLength(); i++ )
-			adjustStackByPos[i] += adjust;
+		// If more than one variable in different scopes occupy the same position on the stack they must have the same size
+		asASSERT(adjustStackByPos[pos] == 0 || adjustStackByPos[pos] == adjust);
+
+		adjustStackByPos[pos] = adjust;
+	}
+	// Accumulate adjustments 
+	int adjust = adjustStackByPos[0];
+	for (asUINT i = 1; i < adjustStackByPos.GetLength(); i++)
+	{
+		adjust += adjustStackByPos[i];
+		adjustStackByPos[i] = adjust;
 	}
 
 	// Compute the sequence number of each bytecode instruction in order to update the jump offsets
-	asUINT length = func->scriptData->byteCode.GetLength();
+	asUINT length = func->scriptData->byteCode.GetLength() + 1; // accomodate one more for invisible instructions, e.g. scope end
 	asDWORD *bc = func->scriptData->byteCode.AddressOf();
-	bytecodeNbrByPos.SetLength(length);
+	bytecodeNbrByPos.SetLength(length); 
 	asUINT num;
-	for( offset = 0, num = 0; offset < length; )
+	for( offset = 0, num = 0; offset < length-1; )
 	{
 		bytecodeNbrByPos[offset] = num;
 		offset += asBCTypeSize[asBCInfo[*(asBYTE*)(bc+offset)].type];
 		num++;
 	}
+	bytecodeNbrByPos[offset] = num;
 
 	// Store the number of instructions in the last position of bytecodeNbrByPos, 
 	// so this can be easily queried in SaveBytecode. Normally this is already done
