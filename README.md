@@ -111,9 +111,6 @@ This example has two implementations for promise resolution (controlled by __Exe
     6. Thread A pops latest callback from a callback queue
     7. Thread A continues the execution
 
-## Core built-in dependencies
-* [AngelScript](https://sourceforge.net/projects/angelscript/)
-
 ## Building
 CMake is build-system for this project, use CMake generate feature, no additional setup is required.
 
