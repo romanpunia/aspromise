@@ -94,9 +94,7 @@ void SetTimeoutNative(uint64_t Ms, asIScriptFunction* Callback)
 
 			/* Cleanup everything referenced */
 			Engine->ReturnContext(Context);
-			if (DelegateObject != nullptr)
-				Engine->AddRefScriptObject(DelegateObject, Callback->GetDelegateObjectType());
-			Callback->Release();
+            AsDirectPromise::ClearCallback(Callback);
 		}
 		else if (ExecutionPolicy == ExampleExecution::NodeJSEventLoop_ExecutesNext)
 		{
