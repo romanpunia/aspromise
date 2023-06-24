@@ -34,7 +34,7 @@ Promise creation
     /*
         Built-in implementations:
             AsDirectPromise = thread that resolves the promise continues script execution,
-            AsReactivePromise = thread that resolves the notifies the initiator
+            AsReactivePromise = thread that resolves notifies the initiator
     */
 ```
 
