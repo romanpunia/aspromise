@@ -1,0 +1,3 @@
+[submodule "examples/angelscript"]
+	path = examples/angelscript
+	url = https://github.com/codecat/angelscript-mirror

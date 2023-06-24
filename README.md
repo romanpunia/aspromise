@@ -8,7 +8,7 @@ Drag and drop __promise.hpp__ somewhere into your project.
 Promise creation
 ```as
     promise<int>@ result = promise<int>();
-    // promise<void> = promise_v
+    // Use promise_v for promise<void>
 ```
 
 Promise settlement
@@ -30,7 +30,12 @@ Promise awaiting using callbacks
 ## Example usage with C++
 Promise creation
 ```cpp
-    SeqAsPromise<int>* Result = SeqAsPromise<int>::Create();
+    AsBasicPromise<Executor>* Result = AsBasicPromise<Executor>::Create();
+    /*
+        Built-in implementations:
+            AsDirectPromise = thread that resolves the promise continues script execution,
+            AsReactivePromise = thread that resolves the notifies the initiator
+    */
 ```
 
 Promise settlement
@@ -47,7 +52,7 @@ Promise awaiting using wait
 
 Promise awaiting using callbacks
 ```cpp
-    Result->When([](AsSeqPromise<int>* Result)
+    Result->When([](AsBasicPromise<Executor>* Result)
     {
         int32_t Number;
         Result->Retrieve(&Number, asTYPEID_INT32);
@@ -68,7 +73,7 @@ they are strings in AngelScript. This behaviour is controlled by user anyways an
 Promise class is a template for a reason, it needs a specific functor struct that will be called before context suspend
 and when context resume is requested. This allows one to implement promise execution in any manner: using thread pool, conditional variables, single threaded sequence of execute calls and using other techniques that could be required by their specific environment. This also allows informative debugging with watchers.
 
-Implementation does not have some features from other languages like JavaScript, for example **Promise.all**, these could be added through script file easily. Also promise does not contain **\<then\>** function that is used pretty often in JavaScript. That is because unlike JavaScript in AngelScript every context of execution is it self a coroutine so that is considered bloat by my self to add chaining.
+Implementation does not have some features from other languages like JavaScript, for example **Promise.all**, these could be added through script file. Also promise does not contain **\<then\>** function that is used pretty often in JavaScript. That is because unlike JavaScript in AngelScript every context of execution is it self a coroutine so that is considered bloat by my self to add chaining.
 
 Promise execution is conditional meaning early settled promises will never suspend context which improves performance and reduces latency. Also promise implementation uses AngelScript's memory functions to ensure support for memory pools and other optimizations.
 
@@ -88,7 +93,23 @@ This implementation supports important feature in my opinion: __co_await__ keywo
 
 And final feature is naming customization, modifying preprocessor definitions in __promise.hpp__ you could achieve desired naming conventions. By default C style is used (snake-case). 
 
-In this example promise execution chain is multithreaded. __Execute()__ is called in thread A, then __co_await__ is called, thread A is now out of execution, some random thread B settles the promise and then thread B continues execution of script context.
+## How it executes
+This example has two implementations for promise resolution (controlled by __ExecutionPolicy__ global variable in **examples/promises.cpp**):
+* Settlement thread executes next:
+    1. Thread A has started the execution
+    2. Promise await is called
+    3. Thread A sleeps or does something unrelated
+    4. Thread B settles the promise
+    5. Thread B continues the execution
+* Node.js event loop executes next:
+    1. Thread A has started the execution
+    2. Promise await is called
+    3. Thread A sleeps or does something unrelated
+    4. Thread B settles the promise
+    5. Thread B pushes a callback into a callback queue
+    5. Thread A awakes or reaches it's event loop
+    6. Thread A pops latest callback from a callback queue
+    7. Thread A continues the execution
 
 ## Core built-in dependencies
 * [AngelScript](https://sourceforge.net/projects/angelscript/)

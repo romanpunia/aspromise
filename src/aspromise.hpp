@@ -49,7 +49,7 @@
 	see (wrapper): https://github.com/romanpunia/mavi/blob/master/src/mavi/core/bindings.h?plain=1#L789
 */
 template <typename Executor>
-class AsPromise
+class AsBasicPromise
 {
 private:
 	/* Basically used from <any> class */
@@ -68,7 +68,7 @@ private:
 	/* Callbacks storage */
 	struct
 	{
-		std::function<void(AsPromise<Executor>*)> Native;
+		std::function<void(AsBasicPromise<Executor>*)> Native;
 		asIScriptFunction* Wrapper = nullptr;
 	} Callbacks;
 #else
@@ -77,7 +77,7 @@ private:
 private:
 	asIScriptEngine* Engine;
 	asIScriptContext* Context;
-	std::atomic<int> RefCount;
+	std::atomic<uint32_t> RefCount;
 	std::mutex Update;
 	Dynamic Value;
 
@@ -89,7 +89,7 @@ public:
 		if (--RefCount <= 0)
 		{
 			ReleaseReferences(nullptr);
-			this->~AsPromise();
+			this->~AsBasicPromise();
 			asFreeMem((void*)this);
 		}
 	}
@@ -115,7 +115,12 @@ public:
 		}
 #if PROMISE_CALLBACKS
 		if (Callbacks.Wrapper != nullptr)
+		{
+			void* DelegateObject = Callbacks.Wrapper->GetDelegateObject();
+			if (DelegateObject != nullptr)
+				OtherEngine->GCEnumCallback(DelegateObject);
 			OtherEngine->GCEnumCallback(Callbacks.Wrapper);
+		}
 #endif
 	}
 	/* For garbage collector to release references */
@@ -132,7 +137,7 @@ public:
 #if PROMISE_CALLBACKS
 		if (Callbacks.Wrapper != nullptr)
 		{
-			Callbacks.Wrapper->Release();
+			ClearCallback(Callbacks.Wrapper);
 			Callbacks.Wrapper = nullptr;
 		}
 #endif
@@ -163,7 +168,7 @@ public:
 		return Value.TypeId;
 	}
 	/* Provide a native callback that should be fired when promise will be settled */
-	void When(std::function<void(AsPromise<Executor>*)>&& NewCallback)
+	void When(std::function<void(AsBasicPromise<Executor>*)>&& NewCallback)
 	{
 #if PROMISE_CALLBACKS
 		Callbacks.Native = std::move(NewCallback);
@@ -176,11 +181,15 @@ public:
 	{
 #if PROMISE_CALLBACKS
 		if (Callbacks.Wrapper != nullptr)
-			Callbacks.Wrapper->Release();
-		
+			ClearCallback(Callbacks.Wrapper);
+	
 		Callbacks.Wrapper = NewCallback;
 		if (Callbacks.Wrapper != nullptr)
-			Callbacks.Wrapper->AddRef();
+		{
+			void* DelegateObject = Callbacks.Wrapper->GetDelegateObject();
+			if (DelegateObject != nullptr)
+				Context->GetEngine()->AddRefScriptObject(DelegateObject, Callbacks.Wrapper->GetDelegateObjectType());
+		}
 #else
 		PROMISE_ASSERT(false, "script callback binder for <when> is not allowed");
 #endif
@@ -192,7 +201,7 @@ public:
 	*/
 	void Store(void* RefPointer, int RefTypeId)
 	{
-		Update.lock();
+		std::unique_lock<std::mutex> Unique(Update);
 		PROMISE_ASSERT(Value.TypeId == PROMISE_NULLID, "promise should be settled only once");
 		PROMISE_ASSERT(RefPointer != nullptr || RefTypeId == asTYPEID_VOID, "input pointer should not be null");
 		PROMISE_ASSERT(Engine != nullptr, "promise is malformed (engine is null)");
@@ -203,9 +212,8 @@ public:
 			asIScriptContext* ThisContext = asGetActiveContext();
 			if (!ThisContext)
 				ThisContext = Context;
-
 			ThisContext->SetException("promise is already fulfilled");
-			return Update.unlock();
+			return;
 		}
 
 		if ((RefTypeId & asTYPEID_MASK_OBJECT))
@@ -224,7 +232,7 @@ public:
 		{
 			Value.Object = Engine->CreateScriptObjectCopy(RefPointer, Engine->GetTypeInfoById(Value.TypeId));
 		}
-		else
+		else if (RefPointer != nullptr)
 		{
 			Value.Integer = 0;
 			int Size = Engine->GetSizeOfPrimitiveType(Value.TypeId);
@@ -235,30 +243,30 @@ public:
 		if (SuspendOwned)
 			Context->SetUserData(nullptr, PROMISE_USERID);
 
-		bool WantsResume = (Context->GetState() != asEXECUTION_ACTIVE && SuspendOwned);
+		bool WantsResume = (Context->GetState() == asEXECUTION_SUSPENDED && SuspendOwned);
 #if PROMISE_CALLBACKS
-		Update.unlock();
+		Unique.unlock();
 		if (Callbacks.Native != nullptr)
 		{
 			Callbacks.Native(this);
 			Callbacks.Native = nullptr;
 		}
-
-		if (Callbacks.Wrapper != nullptr)
-		{
-			AddRef();
-			Executor()(this, Context, Callbacks.Wrapper);
-			Callbacks.Wrapper->Release();
-			Callbacks.Wrapper = nullptr;
-		}
 #else
 		Ready.notify_all();
-		Update.unlock();
+		Unique.unlock();
 #endif
 		if (WantsResume)
 			Executor()(this, Context);
 		else if (SuspendOwned)
 			Release();
+#if PROMISE_CALLBACKS
+		if (Callbacks.Wrapper != nullptr)
+		{
+			AddRef();
+			Executor()(this, Context, Callbacks.Wrapper);
+			Callbacks.Wrapper = nullptr;
+		}
+#endif
 	}
 	/* Thread safe store function, a little easier for C++ usage */
 	void Store(void* RefPointer, const char* TypeName)
@@ -347,7 +355,7 @@ public:
 		reference to this promise if it is still pending or do nothing
 		if promise was already settled
 	*/
-	AsPromise* YieldIf()
+	AsBasicPromise* YieldIf()
 	{
 		std::unique_lock<std::mutex> Unique(Update);
 		if (Value.TypeId == PROMISE_NULLID && Context != nullptr)
@@ -364,7 +372,7 @@ public:
 		This function can be used to await for promise
 		within C++ code (blocking style)
 	*/
-	AsPromise* WaitIf()
+	AsBasicPromise* WaitIf()
 	{
 		if (!IsPending())
 			return this;
@@ -376,7 +384,7 @@ public:
 			if (IsPending())
 			{
 				std::condition_variable Ready;
-				Callbacks.Native = [&Ready](AsPromise<Executor>*) { Ready.notify_all(); };
+				Callbacks.Native = [&Ready](AsBasicPromise<Executor>*) { Ready.notify_all(); };
 				Ready.wait(Unique, [this]() { return !IsPending(); });
 			}
 #else
@@ -393,7 +401,7 @@ private:
 		Construct a promise, notify GC, set value to none,
 		grab a reference to script context
 	*/
-	AsPromise(asIScriptContext* NewContext) noexcept : Engine(nullptr), Context(NewContext), RefCount(1)
+	AsBasicPromise(asIScriptContext* NewContext) noexcept : Engine(nullptr), Context(NewContext), RefCount(1)
 	{
 		PROMISE_ASSERT(Context != nullptr, "context should not be null");
 		Context->AddRef();
@@ -409,22 +417,22 @@ private:
 	}
 
 public:
-	/* AsPromise creation function, for use within C++ */
-	static AsPromise* Create()
+	/* AsBasicPromise creation function, for use within C++ */
+	static AsBasicPromise* Create()
 	{
-		return new(asAllocMem(sizeof(AsPromise))) AsPromise(asGetActiveContext());
+		return new(asAllocMem(sizeof(AsBasicPromise))) AsBasicPromise(asGetActiveContext());
 	}
-	/* AsPromise creation function, for use within AngelScript */
-	static AsPromise* CreateFactory(void* _Ref, int TypeId)
+	/* AsBasicPromise creation function, for use within AngelScript */
+	static AsBasicPromise* CreateFactory(void* _Ref, int TypeId)
 	{
-		AsPromise* Future = new(asAllocMem(sizeof(AsPromise))) AsPromise(asGetActiveContext());
+		AsBasicPromise* Future = new(asAllocMem(sizeof(AsBasicPromise))) AsBasicPromise(asGetActiveContext());
 		if (TypeId != asTYPEID_VOID)
 			Future->Store(_Ref, TypeId);
 
 		return Future;
 	}
-	/* AsPromise creation function, for use within AngelScript (void promise) */
-	static AsPromise* CreateFactoryVoid(void* _Ref, int TypeId)
+	/* AsBasicPromise creation function, for use within AngelScript (void promise) */
+	static AsBasicPromise* CreateFactoryVoid(void* _Ref, int TypeId)
 	{
 		return Create();
 	}
@@ -521,7 +529,7 @@ public:
 	*/
 	static void Register(asIScriptEngine* Engine)
 	{
-		using Type = AsPromise<Executor>;
+		using Type = AsBasicPromise<Executor>;
 		PROMISE_ASSERT(Engine != nullptr, "script engine should not be null");
 		PROMISE_CHECK(Engine->RegisterObjectType(PROMISE_TYPENAME "<class T>", 0, asOBJ_REF | asOBJ_GC | asOBJ_TEMPLATE));
 		PROMISE_CHECK(Engine->RegisterObjectBehaviour(PROMISE_TYPENAME "<T>", asBEHAVE_FACTORY, PROMISE_TYPENAME "<T>@ f(?&in)", asFUNCTION(Type::CreateFactory), asCALL_CDECL));
@@ -539,7 +547,7 @@ public:
 		PROMISE_CHECK(Engine->RegisterObjectMethod(PROMISE_TYPENAME "<T>", "bool " PROMISE_PENDING "()", asMETHOD(Type, IsPending), asCALL_THISCALL));
 #if PROMISE_CALLBACKS
 		PROMISE_CHECK(Engine->RegisterFuncdef("void " PROMISE_TYPENAME "<T>::" PROMISE_EVENT "(T&in)"));
-		PROMISE_CHECK(Engine->RegisterObjectMethod(PROMISE_TYPENAME "<T>", "void " PROMISE_WHEN "(" PROMISE_EVENT "@+)", asMETHODPR(Type, When, (asIScriptFunction*), void), asCALL_THISCALL));
+		PROMISE_CHECK(Engine->RegisterObjectMethod(PROMISE_TYPENAME "<T>", "void " PROMISE_WHEN "(" PROMISE_EVENT "@)", asMETHODPR(Type, When, (asIScriptFunction*), void), asCALL_THISCALL));
 #endif
 		PROMISE_CHECK(Engine->RegisterObjectType(PROMISE_TYPENAME PROMISE_VOIDPOSTFIX, 0, asOBJ_REF | asOBJ_GC));
 		PROMISE_CHECK(Engine->RegisterObjectBehaviour(PROMISE_TYPENAME PROMISE_VOIDPOSTFIX, asBEHAVE_FACTORY, PROMISE_TYPENAME PROMISE_VOIDPOSTFIX "@ f()", asFUNCTION(Type::CreateFactoryVoid), asCALL_CDECL));
@@ -556,7 +564,7 @@ public:
 		PROMISE_CHECK(Engine->RegisterObjectMethod(PROMISE_TYPENAME PROMISE_VOIDPOSTFIX, "bool " PROMISE_PENDING "()", asMETHOD(Type, IsPending), asCALL_THISCALL));
 #if PROMISE_CALLBACKS
 		PROMISE_CHECK(Engine->RegisterFuncdef("void " PROMISE_TYPENAME PROMISE_VOIDPOSTFIX "::" PROMISE_EVENT "()"));
-		PROMISE_CHECK(Engine->RegisterObjectMethod(PROMISE_TYPENAME PROMISE_VOIDPOSTFIX, "void " PROMISE_WHEN "(" PROMISE_EVENT "@+)", asMETHODPR(Type, When, (asIScriptFunction*), void), asCALL_THISCALL));
+		PROMISE_CHECK(Engine->RegisterObjectMethod(PROMISE_TYPENAME PROMISE_VOIDPOSTFIX, "void " PROMISE_WHEN "(" PROMISE_EVENT "@)", asMETHODPR(Type, When, (asIScriptFunction*), void), asCALL_THISCALL));
 #endif
 	}
 	/*
@@ -685,21 +693,40 @@ public:
 
 		return Code;
 	}
+	/* Helper function to cleanup the script function */
+	static void ClearCallback(asIScriptFunction* Callback)
+	{
+		void* DelegateObject = Callback->GetDelegateObject();
+		if (DelegateObject != nullptr)
+			Callback->GetEngine()->ReleaseScriptObject(DelegateObject, Callback->GetDelegateObjectType());
+		Callback->Release();
+	}
+	/* Helper function to check if context is awaiting on promise */
+	static bool IsContextPending(asIScriptContext* Context)
+	{
+		return Context->GetUserData(PROMISE_USERID) != nullptr || Context->GetState() == asEXECUTION_SUSPENDED;
+	}
+	/* Helper function to check if context is awaiting on promise or active */
+	static bool IsContextBusy(asIScriptContext* Context)
+	{
+		return IsContextPending(Context) || Context->GetState() == asEXECUTION_ACTIVE;
+	}
 };
 
+#ifndef AS_PROMISE_NO_DEFAULTS
 /*
 	Basic promise settle executor, will
 	resume context at thread that has
-	settled the promise,
+	settled the promise.
 */
-struct SeqAsExecutor
+struct AsDirectExecutor
 {
 	/* Called before suspend, this method will probably be optimized out */
-	inline void operator()(AsPromise<SeqAsExecutor>* Promise)
+	inline void operator()(AsBasicPromise<AsDirectExecutor>*)
 	{
 	}
 	/* Called after suspend, this method will probably be inlined anyways */
-	inline void operator()(AsPromise<SeqAsExecutor>* Promise, asIScriptContext* Context)
+	inline void operator()(AsBasicPromise<AsDirectExecutor>* Promise, asIScriptContext* Context)
 	{
 		/*
 			Context should be suspended at this moment but if for
@@ -707,7 +734,6 @@ struct SeqAsExecutor
 			then user is responsible for this task to be properly queued or
 			exception should thrown if possible
 		*/
-		PROMISE_ASSERT(Context->GetState() == asEXECUTION_SUSPENDED, "context cannot be active while waiting for promise to settle");
 		Context->Execute();
 
 		/*
@@ -718,19 +744,81 @@ struct SeqAsExecutor
 		Promise->Release();
 	}
 	/* Called after suspend, for callback execution */
-	inline void operator()(AsPromise<SeqAsExecutor>* Promise, asIScriptContext* ThisContext, asIScriptFunction* Callback)
+	inline void operator()(AsBasicPromise<AsDirectExecutor>* Promise, asIScriptContext* Context, asIScriptFunction* Callback)
 	{
-		asIScriptContext* Context = ThisContext->GetEngine()->CreateContext();
-		PROMISE_ASSERT(Context != nullptr, "context creation is not possible");
-		PROMISE_CHECK(Context->Prepare(Callback));
-		PROMISE_CHECK(Context->SetArgAddress(0, Promise->Retrieve()));
-		Context->Execute();
-		Context->Release();
+		/*
+			Callback control flow:
+				If main context is active: execute nested call on current context
+				If main context is suspended: execute on newly created context
+				Otherwise: execute on current context
+		*/
+		asEContextState State = Context->GetState();
+		auto Execute = [&Promise, &Context, &Callback]()
+		{
+			PROMISE_CHECK(Context->Prepare(Callback));
+			PROMISE_CHECK(Context->SetArgAddress(0, Promise->Retrieve()));
+			Context->Execute();
+		};
+		if (State == asEXECUTION_ACTIVE)
+		{
+			PROMISE_CHECK(Context->PushState());
+			Execute();
+			PROMISE_CHECK(Context->PopState());
+		}
+		else if (State == asEXECUTION_SUSPENDED)
+		{
+			asIScriptEngine* Engine = Context->GetEngine();
+			Context = Engine->RequestContext();
+			Execute();
+			Engine->ReturnContext(Context);
+		}
+		else
+			Execute();
+
+		/* Cleanup referenced resources */
+		AsBasicPromise<AsDirectExecutor>::ClearCallback(Callback);
 		Promise->Release();
 	}
 };
 
-/* Typename exists for intended data type inside a promise */
-template <typename T>
-using SeqAsPromise = AsPromise<SeqAsExecutor>;
+/*
+	Executor that notifies prepared context
+	whenever promise settles.
+*/
+struct AsReactiveExecutor
+{
+	typedef std::function<void(AsBasicPromise<AsReactiveExecutor>*, asIScriptFunction*)> ReactiveCallback;
+
+	/* Called before suspend, this method will probably be optimized out */
+	inline void operator()(AsBasicPromise<AsReactiveExecutor>*)
+	{
+	}
+	/* Called after suspend, this method will probably be inlined anyways */
+	inline void operator()(AsBasicPromise<AsReactiveExecutor>* Promise, asIScriptContext* Context)
+	{
+		ReactiveCallback& Execute = GetCallback(Context);
+		Execute(Promise, nullptr);
+	}
+	/* Called after suspend, for callback execution */
+	inline void operator()(AsBasicPromise<AsReactiveExecutor>* Promise, asIScriptContext* Context, asIScriptFunction* Callback)
+	{
+		ReactiveCallback& Execute = GetCallback(Context);
+		Execute(Promise, Callback);
+	}
+	static void SetCallback(asIScriptContext* Context, ReactiveCallback* Callback)
+	{
+		PROMISE_ASSERT(!Callback || *Callback, "invalid reactive callback");
+		Context->SetUserData((void*)Callback, 1022);
+	}
+	static ReactiveCallback& GetCallback(asIScriptContext* Context)
+	{
+		ReactiveCallback* Callback = (ReactiveCallback*)Context->GetUserData(1022);
+		PROMISE_ASSERT(Callback != nullptr, "missing reactive callback on context");
+		return *Callback;
+	}
+};
+
+using AsDirectPromise = AsBasicPromise<AsDirectExecutor>;
+using AsReactivePromise = AsBasicPromise<AsReactiveExecutor>;
+#endif
 #endif

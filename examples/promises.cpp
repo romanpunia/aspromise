@@ -5,6 +5,23 @@
 #include <sstream>
 #include <thread>
 #include <inttypes.h>
+#include <queue>
+
+/* How to execute this example */
+enum class ExampleExecution
+{
+	NodeJSEventLoop_ExecutesNext,
+	SettlementThread_ExecutesNext
+};
+
+struct NextCallback
+{
+	AsBasicPromise<AsReactiveExecutor>* Promise;
+	asIScriptFunction* Callback;
+};
+
+/* Context state globals */
+static ExampleExecution ExecutionPolicy = ExampleExecution::NodeJSEventLoop_ExecutesNext;
 
 /* Thread utils */
 std::string GetThreadId()
@@ -29,12 +46,12 @@ void PrintSetTimeout(uint64_t Ms)
 void PrintResolveTimeout(uint64_t Ms)
 {
 	auto ThreadId = GetThreadId();
-	printf("triggered timer expiration (thread %s)\n", ThreadId.c_str());
+	printf("  triggered timer expiration (thread %s)\n", ThreadId.c_str());
 }
 void PrintResolveTimeoutAsync(uint32_t Id)
 {
 	auto ThreadId = GetThreadId();
-	printf("timer %i has been resolved through callback (thread %s)\n", Id, ThreadId.c_str());
+	printf("  timer %i has been resolved through callback (thread %s)\n", Id, ThreadId.c_str());
 }
 void PrintAndWaitForInput(uint64_t Delta, uint32_t Switches)
 {
@@ -46,9 +63,7 @@ void PrintAndWaitForInput(uint64_t Delta, uint32_t Switches)
 /*
 	Very simple crossplatform timer, i mean this is an example,
 	i would not recommend spawning a thread each time timer is
-	set. Also callback will be executed in newly created context,
-	i didn't find easier way to do that for this example,
-	meaning fully multithreaded. These are not precise btw.
+	set. These are not precise btw.
 */
 void SetTimeoutNative(uint64_t Ms, asIScriptFunction* Callback)
 {
@@ -56,16 +71,38 @@ void SetTimeoutNative(uint64_t Ms, asIScriptFunction* Callback)
 	PROMISE_ASSERT(Callback != nullptr, "callback should not be null");
 	PROMISE_ASSERT(ThisContext != nullptr, "timeout should be called within script environment");
 
-	asIScriptContext* Context = ThisContext->GetEngine()->CreateContext();
-	PROMISE_ASSERT(Context != nullptr, "context creation is not possible");
-	PROMISE_CHECK(Context->Prepare(Callback));
+	void* DelegateObject = Callback->GetDelegateObject();
+	if (DelegateObject != nullptr)
+		ThisContext->GetEngine()->AddRefScriptObject(DelegateObject, Callback->GetDelegateObjectType());
 
-	std::thread([Context, Ms]()
+	std::thread([ThisContext, DelegateObject, Callback, Ms]()
 	{
 		std::this_thread::sleep_for(std::chrono::milliseconds(Ms));
-		int R = Context->Execute();
-		PROMISE_ASSERT(R == asEXECUTION_FINISHED, "this example requires fully synchronous timer callback");
-		Context->Release();
+		if (ExecutionPolicy == ExampleExecution::SettlementThread_ExecutesNext)
+		{
+			/*
+				Callback will be executed in newly created context,
+				i didn't find easier way to do that for this example,
+				meaning fully multithreaded.
+			*/
+			asIScriptEngine* Engine = ThisContext->GetEngine();
+			asIScriptContext* Context = Engine->RequestContext();
+			PROMISE_ASSERT(Context != nullptr, "context creation is not possible");
+			PROMISE_CHECK(Context->Prepare(Callback));
+			int R = Context->Execute();
+			PROMISE_ASSERT(R == asEXECUTION_FINISHED, "this example requires fully synchronous timer callback");
+
+			/* Cleanup everything referenced */
+			Engine->ReturnContext(Context);
+			if (DelegateObject != nullptr)
+				Engine->AddRefScriptObject(DelegateObject, Callback->GetDelegateObjectType());
+			Callback->Release();
+		}
+		else if (ExecutionPolicy == ExampleExecution::NodeJSEventLoop_ExecutesNext)
+		{
+			/* Callback will be executed in event loop */
+			AsReactiveExecutor()(nullptr, ThisContext, Callback);
+		}
 		asThreadCleanup();
 	}).detach();
 }
@@ -74,42 +111,87 @@ void SetTimeoutNative(uint64_t Ms, asIScriptFunction* Callback)
 	Same as previous but promise will be returned, this is an example
 	when promise is settled within C++
 */
-SeqAsPromise<int>* SetTimeoutNativePromise(uint64_t Ms)
+void* SetTimeoutNativePromise(uint64_t Ms)
 {
-	SeqAsPromise<int>* Result = SeqAsPromise<int>::Create();
+	void* Result = nullptr;
+	if (ExecutionPolicy == ExampleExecution::SettlementThread_ExecutesNext)
+		Result = AsDirectPromise::Create();
+	else if (ExecutionPolicy == ExampleExecution::NodeJSEventLoop_ExecutesNext)
+		Result = AsReactivePromise::Create();
+
 	std::thread([Ms, Result]()
 	{
 		std::this_thread::sleep_for(std::chrono::milliseconds(Ms));
 		PrintResolveTimeout(Ms); // Print as in script file
 
 		int32_t Value = 1;
-		Result->Store(&Value, asTYPEID_INT32); // Settle the promise
-		Result->Release(); // Must release, returned promise ref-count is automatically incremented
+		if (ExecutionPolicy == ExampleExecution::SettlementThread_ExecutesNext)
+		{
+			AsDirectPromise* Promise = (AsDirectPromise*)Result;
+			Promise->Store(&Value, asTYPEID_INT32); // Settle the promise
+			Promise->Release(); // Must release, returned promise ref-count is automatically incremented
+		}
+		else if (ExecutionPolicy == ExampleExecution::NodeJSEventLoop_ExecutesNext)
+		{
+			AsReactivePromise* Promise = (AsReactivePromise*)Result;
+			Promise->Store(&Value, asTYPEID_INT32);
+			Promise->Release();
+		}
+		asThreadCleanup();
 	}).detach();
 
 	return Result;
 }
 
 /* AngelScript to C++ promises */
-void AwaitPromiseBlocking(SeqAsPromise<int>* Promise)
+void AwaitPromiseBlocking(void* Promise)
 {
-	int32_t Number = 0;
-	Promise->WaitIf()->Retrieve(&Number, asTYPEID_INT32);
-	printf("received number %i from script context (blocking)\n", Number);
+	if (ExecutionPolicy == ExampleExecution::SettlementThread_ExecutesNext)
+	{
+		/*
+			Here we can block current thread because we know
+			that some other thread will resolve the promise 
+		*/
+		int32_t Number = 0;
+		((AsDirectPromise*)Promise)->WaitIf()->Retrieve(&Number, asTYPEID_INT32);
+		printf("  received number %i from script context (blocking)\n", Number);
+	}
+	else if (ExecutionPolicy == ExampleExecution::NodeJSEventLoop_ExecutesNext)
+	{
+		asIScriptContext* Context = asGetActiveContext();
+		PROMISE_ASSERT(Context != nullptr, "cannot access current context");
+		Context->SetException("cannot block current thread to wait for promise");
+		printf("  >> cannot do blocking await while using event loop <<\n");
+	}
 }
-void AwaitPromiseNonBlocking(SeqAsPromise<int>* Promise)
+void AwaitPromiseNonBlocking(void* PromiseContext)
 {
 	auto* Context = asGetActiveContext();
 	if (Context != nullptr)
 		PROMISE_CHECK(Context->Suspend());
 
-	Promise->When([Context](SeqAsPromise<int>* Promise)
+	if (ExecutionPolicy == ExampleExecution::SettlementThread_ExecutesNext)
 	{
-		int32_t Number = 0;
-		Promise->Retrieve(&Number, asTYPEID_INT32);
-		printf("received number %i from script context (non-blocking)\n", Number);
-		PROMISE_CHECK(Context->Execute());
-	});
+		AsDirectPromise* Promise = (AsDirectPromise*)PromiseContext;
+		Promise->When([Context](AsDirectPromise* Promise)
+		{
+			int32_t Number = 0;
+			Promise->Retrieve(&Number, asTYPEID_INT32);
+			printf("  received number %i from script context (non-blocking)\n", Number);
+			PROMISE_CHECK(Context->Execute());
+		});
+	}
+	else if (ExecutionPolicy == ExampleExecution::NodeJSEventLoop_ExecutesNext)
+	{
+		AsReactivePromise* Promise = (AsReactivePromise*)PromiseContext;
+		Promise->When([Context](AsReactivePromise* Promise)
+		{
+			int32_t Number = 0;
+			Promise->Retrieve(&Number, asTYPEID_INT32);
+			printf("  received number %i from script context (non-blocking)\n", Number);
+			PROMISE_CHECK(Context->Execute());
+		});
+	}
 }
 
 /* Compiler status logger */
@@ -132,14 +214,17 @@ int main(int argc, char* argv[])
 	PROMISE_CHECK(Engine->SetEngineProperty(asEP_USE_CHARACTER_LITERALS, 1));
 	
 	/* Interface registration */
-	SeqAsPromise<int>::Register(Engine);
+	if (ExecutionPolicy == ExampleExecution::SettlementThread_ExecutesNext)
+		AsDirectPromise::Register(Engine);
+	else if (ExecutionPolicy == ExampleExecution::NodeJSEventLoop_ExecutesNext)
+		AsReactivePromise::Register(Engine);
 	PROMISE_CHECK(Engine->RegisterFuncdef("void timer_callback()"));
 	PROMISE_CHECK(Engine->RegisterGlobalFunction("uint64 get_milliseconds()", asFUNCTION(GetMilliseconds), asCALL_CDECL));
 	PROMISE_CHECK(Engine->RegisterGlobalFunction("void print_set_timeout(uint64)", asFUNCTION(PrintSetTimeout), asCALL_CDECL));
 	PROMISE_CHECK(Engine->RegisterGlobalFunction("void print_resolve_timeout()", asFUNCTION(PrintResolveTimeout), asCALL_CDECL));
 	PROMISE_CHECK(Engine->RegisterGlobalFunction("void print_resolve_timeout_async(uint32)", asFUNCTION(PrintResolveTimeoutAsync), asCALL_CDECL));
 	PROMISE_CHECK(Engine->RegisterGlobalFunction("void print_and_wait_for_input(uint64, uint32)", asFUNCTION(PrintAndWaitForInput), asCALL_CDECL));
-	PROMISE_CHECK(Engine->RegisterGlobalFunction("void set_timeout_native(uint64, timer_callback@+)", asFUNCTION(SetTimeoutNative), asCALL_CDECL));
+	PROMISE_CHECK(Engine->RegisterGlobalFunction("void set_timeout_native(uint64, timer_callback@)", asFUNCTION(SetTimeoutNative), asCALL_CDECL));
 	PROMISE_CHECK(Engine->RegisterGlobalFunction("void await_promise_blocking(promise<int>@+)", asFUNCTION(AwaitPromiseBlocking), asCALL_CDECL));
 	PROMISE_CHECK(Engine->RegisterGlobalFunction("void await_promise_non_blocking(promise<int>@+)", asFUNCTION(AwaitPromiseNonBlocking), asCALL_CDECL));
 	PROMISE_CHECK(Engine->RegisterGlobalFunction("promise<int32>@+ set_timeout_native_promise(uint64)", asFUNCTION(SetTimeoutNativePromise), asCALL_CDECL));
@@ -157,7 +242,7 @@ int main(int argc, char* argv[])
 	fclose(Stream);
 
 	/* Promise syntax preprocessing */
-	char* Generated = SeqAsPromise<int>::GenerateEntrypoints(Code, Size);
+	char* Generated = AsDirectPromise::GenerateEntrypoints(Code, Size);
 	Size = strlen(Generated);
 	asFreeMem(Code);
 
@@ -172,25 +257,89 @@ int main(int argc, char* argv[])
 	assert(Main != nullptr);
 
 	/* Context initialization */
-	asIScriptContext* Context = Engine->CreateContext();
-	PROMISE_CHECK(Context->Prepare(Main));
+	asIScriptContext* Context = Engine->RequestContext();
+	if (ExecutionPolicy == ExampleExecution::SettlementThread_ExecutesNext)
+	{
+		PROMISE_CHECK(Context->Prepare(Main));
+		int R = Context->Execute();
+		PROMISE_ASSERT(R == asEXECUTION_FINISHED || R == asEXECUTION_SUSPENDED, "check script code, it may have thrown an exception");
+		while (AsDirectPromise::IsContextBusy(Context))
+			std::this_thread::sleep_for(std::chrono::milliseconds(10));
+	}
+	else if (ExecutionPolicy == ExampleExecution::NodeJSEventLoop_ExecutesNext)
+	{
+		/* Event loop state */
+		std::queue<NextCallback> Queue;
+		std::condition_variable Condition;
+		std::mutex Mutex;
+		AsReactiveExecutor::ReactiveCallback Notify = [&Mutex, &Condition, &Queue](AsReactivePromise* Promise, asIScriptFunction* Callback)
+		{
+			std::unique_lock<std::mutex> Unique(Mutex);
+			Queue.push({ Promise, Callback });
+			Condition.notify_one();
+		};
 
-	/*
-		Execution cycle, we execute only once here,
-		then wait until there are no promises left,
-		it could be implemented differently through
-		conditional variables, thread pool, event loop or
-		simple execute cycle using appropriate executor.
-	*/
-	int R = Context->Execute();
-	PROMISE_ASSERT(R == asEXECUTION_FINISHED || R == asEXECUTION_SUSPENDED, "check script code, it may have thrown an exception");
-	while (Context->GetUserData(PROMISE_USERID) != nullptr || Context->GetState() != asEXECUTION_FINISHED)
-		std::this_thread::sleep_for(std::chrono::milliseconds(10));
+		/* Event loop setup */
+		AsReactiveExecutor::SetCallback(Context, &Notify);
+
+		/* Push main function onto the stack */
+		Main->AddRef();
+		Queue.push({ nullptr, Main });
+
+		/* Event loop */
+		while (AsReactivePromise::IsContextBusy(Context) || !Queue.empty())
+		{
+			/* Block until we have something to execute */
+			std::unique_lock<std::mutex> Unique(Mutex);
+			Condition.wait_for(Unique, std::chrono::milliseconds(1000), [&Queue]() { return !Queue.empty(); });
+
+			while (!Queue.empty())
+			{
+				/* Pop next callback from queue */
+				NextCallback Next = std::move(Queue.front());
+				Queue.pop();
+
+				/* We request another context if main context cannot execute this function at the moment */
+				asIScriptContext* ExecutingContext = Context;
+				if (Next.Callback != nullptr && ExecutingContext->GetState() == asEXECUTION_SUSPENDED)
+					ExecutingContext = Engine->RequestContext();
+				
+				/* Negate mutex while executing the callback */
+				Unique.unlock();
+				if (Next.Callback != nullptr)
+				{
+					PROMISE_CHECK(ExecutingContext->Prepare(Next.Callback));
+					if (Next.Promise != nullptr)
+						PROMISE_CHECK(ExecutingContext->SetArgAddress(0, Next.Promise->Retrieve()));
+				}
+				int R = ExecutingContext->Execute();
+				Unique.lock();
+
+				/* Release associated state */
+				if (Next.Callback != nullptr)
+					AsReactivePromise::ClearCallback(Next.Callback);
+				if (Next.Promise != nullptr)
+					Next.Promise->Release();
+				if (ExecutingContext != Context)
+					Engine->ReturnContext(ExecutingContext);
+
+				/* Check if we may continue execute callbacks */
+				if (R == asEXECUTION_SUSPENDED)
+				{
+					PROMISE_ASSERT(ExecutingContext == Context, "this event loop does not allow coroutine usage inside callbacks");
+					break;
+				}
+				else if (R == asEXECUTION_FINISHED)
+					continue;
+
+				PROMISE_ASSERT(false, "check script code, it may have thrown an exception");
+			}
+		}
+	}
 
 	/* Clean up */
-	Context->Release();
+	Engine->ReturnContext(Context);
 	Engine->ShutDownAndRelease();
-	asThreadCleanup();
 
 	return 0;
 }
