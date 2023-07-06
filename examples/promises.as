@@ -21,10 +21,8 @@ promise<int32>@ set_timeout(uint64 timeout_ms)
 void main()
 {
     auto start = get_milliseconds();
-    print_set_timeout(500);
     co_await set_timeout_native_promise(500); // Promise is created and resolved in C++, awaited in AS
 
-    print_set_timeout(100);
     auto indirect_timer = set_timeout(100); // Promise is created, resolved and awaited in AS
     indirect_timer.when(function(value)
     {
@@ -33,14 +31,9 @@ void main()
 
     /* Can be both awaited and callback fired at the same time */
     co_await indirect_timer;
-
-    print_set_timeout(1000);
     co_await set_timeout(1000);
-
-    print_set_timeout(500);
     co_await set_timeout(500);
 
-    print_set_timeout(1350);
     auto blocking_timer = set_timeout(1350);
     try 
     {
@@ -52,10 +45,7 @@ void main()
         await_promise_non_blocking(@blocking_timer);
     }
     
-    print_set_timeout(1050);
     await_promise_non_blocking(set_timeout(1050)); // await promise within C++ (non-blocking)
-
-    print_set_timeout(1001);
     uint32 switches = co_await set_timeout(1000); // co_await returns stored value by the way
     
     auto end = get_milliseconds();

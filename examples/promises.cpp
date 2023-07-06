@@ -14,6 +14,7 @@ enum class ExampleExecution
 	SettlementThread_ExecutesNext
 };
 
+/* Event loop callback temporary storage */
 struct NextCallback
 {
 	AsBasicPromise<AsReactiveExecutor>* Promise;
@@ -70,6 +71,7 @@ void SetTimeoutNative(uint64_t Ms, asIScriptFunction* Callback)
 	asIScriptContext* ThisContext = asGetActiveContext();
 	PROMISE_ASSERT(Callback != nullptr, "callback should not be null");
 	PROMISE_ASSERT(ThisContext != nullptr, "timeout should be called within script environment");
+	PrintSetTimeout(Ms);
 
 	void* DelegateObject = Callback->GetDelegateObject();
 	if (DelegateObject != nullptr)
@@ -94,7 +96,7 @@ void SetTimeoutNative(uint64_t Ms, asIScriptFunction* Callback)
 
 			/* Cleanup everything referenced */
 			Engine->ReturnContext(Context);
-            AsDirectPromise::ClearCallback(Callback);
+            AsClearCallback(Callback);
 		}
 		else if (ExecutionPolicy == ExampleExecution::NodeJSEventLoop_ExecutesNext)
 		{
@@ -117,6 +119,7 @@ void* SetTimeoutNativePromise(uint64_t Ms)
 	else if (ExecutionPolicy == ExampleExecution::NodeJSEventLoop_ExecutesNext)
 		Result = AsReactivePromise::Create();
 
+	PrintSetTimeout(Ms);
 	std::thread([Ms, Result]()
 	{
 		std::this_thread::sleep_for(std::chrono::milliseconds(Ms));
@@ -218,7 +221,6 @@ int main(int argc, char* argv[])
 		AsReactivePromise::Register(Engine);
 	PROMISE_CHECK(Engine->RegisterFuncdef("void timer_callback()"));
 	PROMISE_CHECK(Engine->RegisterGlobalFunction("uint64 get_milliseconds()", asFUNCTION(GetMilliseconds), asCALL_CDECL));
-	PROMISE_CHECK(Engine->RegisterGlobalFunction("void print_set_timeout(uint64)", asFUNCTION(PrintSetTimeout), asCALL_CDECL));
 	PROMISE_CHECK(Engine->RegisterGlobalFunction("void print_resolve_timeout()", asFUNCTION(PrintResolveTimeout), asCALL_CDECL));
 	PROMISE_CHECK(Engine->RegisterGlobalFunction("void print_resolve_timeout_async(uint32)", asFUNCTION(PrintResolveTimeoutAsync), asCALL_CDECL));
 	PROMISE_CHECK(Engine->RegisterGlobalFunction("void print_and_wait_for_input(uint64, uint32)", asFUNCTION(PrintAndWaitForInput), asCALL_CDECL));
@@ -240,7 +242,7 @@ int main(int argc, char* argv[])
 	fclose(Stream);
 
 	/* Promise syntax preprocessing */
-	char* Generated = AsDirectPromise::GenerateEntrypoints(Code, Size);
+	char* Generated = AsGeneratePromiseEntrypoints(Code, Size);
 	Size = strlen(Generated);
 	asFreeMem(Code);
 
@@ -261,7 +263,7 @@ int main(int argc, char* argv[])
 		PROMISE_CHECK(Context->Prepare(Main));
 		int R = Context->Execute();
 		PROMISE_ASSERT(R == asEXECUTION_FINISHED || R == asEXECUTION_SUSPENDED, "check script code, it may have thrown an exception");
-		while (AsDirectPromise::IsContextBusy(Context))
+		while (IsAsyncContextBusy(Context))
 			std::this_thread::sleep_for(std::chrono::milliseconds(10));
 	}
 	else if (ExecutionPolicy == ExampleExecution::NodeJSEventLoop_ExecutesNext)
@@ -285,7 +287,7 @@ int main(int argc, char* argv[])
 		Queue.push({ nullptr, Main });
 
 		/* Event loop */
-		while (AsReactivePromise::IsContextBusy(Context) || !Queue.empty())
+		while (IsAsyncContextBusy(Context) || !Queue.empty())
 		{
 			/* Block until we have something to execute */
 			std::unique_lock<std::mutex> Unique(Mutex);
@@ -315,7 +317,7 @@ int main(int argc, char* argv[])
 
 				/* Release associated state */
 				if (Next.Callback != nullptr)
-					AsReactivePromise::ClearCallback(Next.Callback);
+					AsClearCallback(Next.Callback);
 				if (Next.Promise != nullptr)
 					Next.Promise->Release();
 				if (ExecutingContext != Context)
