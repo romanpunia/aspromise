@@ -691,30 +691,38 @@ static char* AsGeneratePromiseEntrypoints(const char* Text, size_t Size, void*(*
 			End++;
 		}
 
-		if (End - Start > 0)
+		if (!(End - Start))
 		{
-			const char Generator[] = "." PROMISE_YIELD "()." PROMISE_UNWRAP "()";
-			char* Left = Code, * Middle = Code + Start, * Right = Code + End;
-			size_t LeftSize = Offset;
-			size_t MiddleSize = End - Start;
-			size_t GeneratorSize = sizeof(Generator) - 1;
-			size_t RightSize = Size - Offset;
-			size_t SubstringSize = LeftSize + MiddleSize + GeneratorSize + RightSize;
-
-			char* Substring = (char*)AllocateMemory(SubstringSize + 1);
-			memcpy(Substring, Left, LeftSize);
-			memcpy(Substring + LeftSize, Middle, MiddleSize);
-			memcpy(Substring + LeftSize + MiddleSize, Generator, GeneratorSize);
-			memcpy(Substring + LeftSize + MiddleSize + GeneratorSize, Right, RightSize);
-			Substring[SubstringSize] = '\0';
-			FreeMemory(Code);
-
-			Code = Substring;
-			Size = strlen(Code);
-			Offset += MiddleSize + GeneratorSize;
-		}
-		else
 			Offset = End;
+			continue;
+		}
+
+		const char Generator[] = "." PROMISE_YIELD "()." PROMISE_UNWRAP "()";
+		char* Left = Code, * Middle = Code + Start, * Right = Code + End;
+		size_t LeftSize = Offset;
+		size_t MiddleSize = End - Start;
+		size_t GeneratorSize = sizeof(Generator) - 1;
+		size_t RightSize = Size - Offset;
+		size_t SubstringSize = LeftSize + MiddleSize + GeneratorSize + RightSize;
+
+		char* Substring = (char*)AllocateMemory(SubstringSize + 1);
+		memcpy(Substring, Left, LeftSize);
+		memcpy(Substring + LeftSize, Middle, MiddleSize);
+		memcpy(Substring + LeftSize + MiddleSize, Generator, GeneratorSize);
+		memcpy(Substring + LeftSize + MiddleSize + GeneratorSize, Right, RightSize);
+		Substring[SubstringSize] = '\0';
+		FreeMemory(Code);
+
+		size_t NestedSize = Offset + MiddleSize;
+		char Prev = Substring[NestedSize];
+		Substring[NestedSize] = '\0';
+		bool IsRecursive = (strstr(Substring + Offset, PROMISE_AWAIT) != nullptr);
+		Substring[NestedSize] = Prev;
+
+		Code = Substring;
+		Size = strlen(Code);
+		if (!IsRecursive)
+			Offset += MiddleSize + GeneratorSize;
 	}
 
 	return Code;
