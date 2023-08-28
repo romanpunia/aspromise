@@ -686,7 +686,12 @@ static char* AsGeneratePromiseEntrypoints(const char* Text, size_t Size, void*(*
 			else if (Brackets == 0 && Indexers == 0)
 			{
 				if (!isalnum(V) && V != '.' && V != ' ' && V != '_')
-					break;
+				{
+					if (V != ':' || End + 1 >= Size || Code[End + 1] != ':')
+						break;
+					else
+						++End;
+				}
 			}
 			End++;
 		}
