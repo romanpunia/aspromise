@@ -677,6 +677,23 @@ static char* AsGeneratePromiseEntrypoints(const char* Text, size_t Size, void*(*
 				if (--Indexers < 0)
 					break;
 			}
+			else if (U == '\"' || U == '\'')
+			{
+				++End;
+				while (End < Size)
+				{
+					size_t LastEnd = End++;
+					if (Code[LastEnd] != U)
+						continue;
+
+					if (LastEnd < 1 || Code[LastEnd - 1] != '\\')
+						break;
+
+					if (LastEnd > 1 && Code[LastEnd - 2] == '\\')
+						break;
+				}
+				--End;
+			}
 			else if (V == '(')
 				++Brackets;
 			else if (V == '[')
