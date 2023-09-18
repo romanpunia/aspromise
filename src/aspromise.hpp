@@ -663,6 +663,8 @@ static char* AsGeneratePromiseEntrypoints(const char* Text, size_t Size, void*(*
 
 		int32_t Indexers = 0;
 		int32_t Brackets = 0;
+		int32_t Braces = 0;
+		int32_t Quotes = 0;
 		size_t End = Start;
 		while (End < Size)
 		{
@@ -670,6 +672,11 @@ static char* AsGeneratePromiseEntrypoints(const char* Text, size_t Size, void*(*
 			if (V == ')')
 			{
 				if (--Brackets < 0)
+					break;
+			}
+			else if (V == '}')
+			{
+				if (--Braces < 0)
 					break;
 			}
 			else if (V == ']')
@@ -696,11 +703,13 @@ static char* AsGeneratePromiseEntrypoints(const char* Text, size_t Size, void*(*
 			}
 			else if (V == '(')
 				++Brackets;
+			else if (V == '{')
+				++Braces;
 			else if (V == '[')
 				++Indexers;
 			else if (V == ';')
 				break;
-			else if (Brackets == 0 && Indexers == 0)
+			else if (Brackets == 0 && Braces == 0 && Indexers == 0)
 			{
 				if (!isalnum(V) && V != '.' && V != ' ' && V != '_')
 				{
