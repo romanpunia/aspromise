@@ -130,7 +130,12 @@ void* SetTimeoutNativePromise(uint64_t Ms)
 		{
 			AsDirectPromise* Promise = (AsDirectPromise*)Result;
 			Promise->Store(&Value, asTYPEID_INT32); // Settle the promise
-			Promise->Release(); // Must release, returned promise ref-count is automatically incremented
+			/*
+				Must release, returned promise ref-count is automatically incremented,
+				in more complex environments additional logic may be required to maintain
+				valid promise lifetime (!)
+			*/
+			Promise->Release();
 		}
 		else if (ExecutionPolicy == ExampleExecution::NodeJSEventLoop_ExecutesNext)
 		{
@@ -168,29 +173,43 @@ void AwaitPromiseBlocking(void* Promise)
 void AwaitPromiseNonBlocking(void* PromiseContext)
 {
 	auto* Context = asGetActiveContext();
-	if (Context != nullptr)
-		PROMISE_CHECK(Context->Suspend());
-
 	if (ExecutionPolicy == ExampleExecution::SettlementThread_ExecutesNext)
 	{
+		/* If promise is still pending the we suspend the context */
 		AsDirectPromise* Promise = (AsDirectPromise*)PromiseContext;
+		if (Context != nullptr && Promise->IsPending())
+			PROMISE_CHECK(Context->Suspend());
+		else
+			Context = nullptr;
+
 		Promise->When([Context](AsDirectPromise* Promise)
 		{
 			int32_t Number = 0;
 			Promise->Retrieve(&Number, asTYPEID_INT32);
 			printf("  received number %i from script context (non-blocking)\n", Number);
-			PROMISE_CHECK(Context->Execute());
+			/*
+				If promise was pending then we resume the context otherwise this callback
+				was called in-place
+			*/
+			if (Context != nullptr)
+				PROMISE_CHECK(Context->Execute());
 		});
 	}
 	else if (ExecutionPolicy == ExampleExecution::NodeJSEventLoop_ExecutesNext)
 	{
 		AsReactivePromise* Promise = (AsReactivePromise*)PromiseContext;
+		if (Context != nullptr && Promise->IsPending())
+			PROMISE_CHECK(Context->Suspend());
+		else
+			Context = nullptr;
+
 		Promise->When([Context](AsReactivePromise* Promise)
 		{
 			int32_t Number = 0;
 			Promise->Retrieve(&Number, asTYPEID_INT32);
 			printf("  received number %i from script context (non-blocking)\n", Number);
-			PROMISE_CHECK(Context->Execute());
+			if (Context != nullptr)
+				PROMISE_CHECK(Context->Execute());
 		});
 	}
 }
@@ -242,8 +261,7 @@ int main(int argc, char* argv[])
 	fclose(Stream);
 
 	/* Promise syntax preprocessing */
-	char* Generated = AsGeneratePromiseEntrypoints(Code, Size);
-	Size = strlen(Generated);
+	char* Generated = AsGeneratePromiseEntrypoints(Code, &Size);
 	asFreeMem(Code);
 
 	/* Module initialization */
@@ -309,8 +327,9 @@ int main(int argc, char* argv[])
 				if (Next.Callback != nullptr)
 				{
 					PROMISE_CHECK(ExecutingContext->Prepare(Next.Callback));
-					if (Next.Promise != nullptr)
-						PROMISE_CHECK(ExecutingContext->SetArgAddress(0, Next.Promise->Retrieve()));
+					/* Ability to execute either a main function or a promise function */
+					if (Next.Promise)
+						PROMISE_CHECK(ExecutingContext->SetArgObject(0, Next.Promise));
 				}
 				int R = ExecutingContext->Execute();
 				Unique.lock();
@@ -318,14 +337,13 @@ int main(int argc, char* argv[])
 				/* Release associated state */
 				if (Next.Callback != nullptr)
 					AsClearCallback(Next.Callback);
-				if (Next.Promise != nullptr)
-					Next.Promise->Release();
 				if (ExecutingContext != Context)
 					Engine->ReturnContext(ExecutingContext);
 
 				/* Check if we may continue execute callbacks */
 				if (R == asEXECUTION_SUSPENDED)
 				{
+					/* Coroutines inside callbacks require a lot more complex logic */
 					PROMISE_ASSERT(ExecutingContext == Context, "this event loop does not allow coroutine usage inside callbacks");
 					break;
 				}

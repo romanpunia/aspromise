@@ -18,13 +18,16 @@ Promise settlement
 
 Promise awaiting using coroutines
 ```cpp
-    int number_await = co_await result;
-    int number_unwrap = result.yield().unwrap();
+    int number_awaited = co_await result;
+    int number_unwrapped = result.yield().unwrap();
 ```
 
 Promise awaiting using callbacks
-```js
-    result.when(function(number) { });
+```cpp
+    result.when(function(wrapped_number)
+    {
+        int number_unwrapped = wrapped_number.unwrap();
+    });
 ```
 
 ## Example usage with C++

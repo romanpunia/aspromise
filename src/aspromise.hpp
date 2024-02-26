@@ -53,10 +53,6 @@ static bool IsAsyncContextBusy(asIScriptContext* Context)
 /*
 	Basic promise class that can be used for non-blocking asynchronous operation
 	data exchange between AngelScript and C++ and vice-versa.
-
-	More info at:
-		(native) https://github.com/romanpunia/mavi/blob/master/src/mavi/core/core.h?plain=1#L2887
-		(wrapper): https://github.com/romanpunia/mavi/blob/master/src/mavi/core/bindings.h?plain=1#L789
 */
 template <typename Executor>
 class AsBasicPromise
@@ -87,8 +83,8 @@ private:
 private:
 	asIScriptEngine* Engine;
 	asIScriptContext* Context;
-	std::atomic<uint16_t> RefCount;
-	std::atomic<uint16_t> RefMark; 
+	std::atomic<uint32_t> RefCount;
+	std::atomic<uint32_t> RefMark; 
 	std::mutex Update;
 	Dynamic Value;
 
@@ -108,7 +104,7 @@ public:
 	/* Thread safe add reference */
 	void AddRef()
 	{
-		PROMISE_ASSERT(RefCount < std::numeric_limits<uint16_t>::max(), "too many references to this promise");
+		PROMISE_ASSERT(RefCount < std::numeric_limits<uint32_t>::max(), "too many references to this promise");
 		RefMark = 0;
 		++RefCount;
 	}
@@ -155,11 +151,6 @@ public:
 			Callbacks.Wrapper = nullptr;
 		}
 #endif
-		if (Context != nullptr)
-		{
-			Context->Release();
-			Context = nullptr;
-		}
 	}
 	/* For garbage collector to mark */
 	void MarkRef()
@@ -185,7 +176,14 @@ public:
 	void When(std::function<void(AsBasicPromise<Executor>*)>&& NewCallback)
 	{
 #if PROMISE_CALLBACKS
+		std::unique_lock<std::mutex> Unique(Update);
 		Callbacks.Native = std::move(NewCallback);
+		if (Callbacks.Native && !IsPending())
+		{
+			auto Callback = std::move(Callbacks.Native);
+			Unique.unlock();
+			Callback(this);
+		}
 #else
 		PROMISE_ASSERT(false, "native callback binder for <when> is not allowed");
 #endif
@@ -194,6 +192,7 @@ public:
 	void When(asIScriptFunction* NewCallback)
 	{
 #if PROMISE_CALLBACKS
+		std::unique_lock<std::mutex> Unique(Update);
 		if (Callbacks.Wrapper != nullptr)
 			AsClearCallback(Callbacks.Wrapper);
 
@@ -203,6 +202,13 @@ public:
 			void* DelegateObject = Callbacks.Wrapper->GetDelegateObject();
 			if (DelegateObject != nullptr)
 				Context->GetEngine()->AddRefScriptObject(DelegateObject, Callbacks.Wrapper->GetDelegateObjectType());
+		}
+
+		if (Callbacks.Wrapper != nullptr && !IsPending())
+		{
+			Callbacks.Wrapper = nullptr;
+			Unique.unlock();
+			Executor()(this, Context, NewCallback);
 		}
 #else
 		PROMISE_ASSERT(false, "script callback binder for <when> is not allowed");
@@ -259,27 +265,21 @@ public:
 
 		bool WantsResume = (Context->GetState() == asEXECUTION_SUSPENDED && SuspendOwned);
 #if PROMISE_CALLBACKS
+		auto NativeCallback = std::move(Callbacks.Native);
+		auto* WrapperCallback = Callbacks.Wrapper;
+		Callbacks.Wrapper = nullptr;
 		Unique.unlock();
-		if (Callbacks.Native != nullptr)
-		{
-			Callbacks.Native(this);
-			Callbacks.Native = nullptr;
-		}
 #else
 		Ready.notify_all();
 		Unique.unlock();
 #endif
 		if (WantsResume)
 			Executor()(this, Context);
-		else if (SuspendOwned)
-			Release();
 #if PROMISE_CALLBACKS
-		if (Callbacks.Wrapper != nullptr)
-		{
-			AddRef();
-			Executor()(this, Context, Callbacks.Wrapper);
-			Callbacks.Wrapper = nullptr;
-		}
+		if (NativeCallback != nullptr)
+			NativeCallback(this);
+		if (WrapperCallback != nullptr)
+			Executor()(this, Context, WrapperCallback);
 #endif
 	}
 	/* Thread safe store function, a little easier for C++ usage */
@@ -372,13 +372,8 @@ public:
 	AsBasicPromise* YieldIf()
 	{
 		std::unique_lock<std::mutex> Unique(Update);
-		if (Value.TypeId == PROMISE_NULLID && Context != nullptr)
-		{
-			AddRef();
+		if (Value.TypeId == PROMISE_NULLID && Context != nullptr && Context->Suspend() >= 0)
 			Context->SetUserData(this, PROMISE_USERID);
-			Executor()(this);
-			Context->Suspend();
-		}
 
 		return this;
 	}
@@ -391,22 +386,18 @@ public:
 		if (!IsPending())
 			return this;
 
-		AddRef();
-		{
-			std::unique_lock<std::mutex> Unique(Update);
+		std::unique_lock<std::mutex> Unique(Update);
 #if PROMISE_CALLBACKS
-			if (IsPending())
-			{
-				std::condition_variable Ready;
-				Callbacks.Native = [&Ready](AsBasicPromise<Executor>*) { Ready.notify_all(); };
-				Ready.wait(Unique, [this]() { return !IsPending(); });
-			}
-#else
-			if (IsPending())
-				Ready.wait(Unique, [this]() { return !IsPending(); });
-#endif
+		if (IsPending())
+		{
+			std::condition_variable Ready;
+			Callbacks.Native = [&Ready](AsBasicPromise<Executor>*) { Ready.notify_all(); };
+			Ready.wait(Unique, [this]() { return !IsPending(); });
 		}
-		Release();
+#else
+		if (IsPending())
+			Ready.wait(Unique, [this]() { return !IsPending(); });
+#endif
 		return this;
 	}
 
@@ -418,7 +409,6 @@ private:
 	AsBasicPromise(asIScriptContext* NewContext) noexcept : Engine(nullptr), Context(NewContext), RefCount(1), RefMark(0)
 	{
 		PROMISE_ASSERT(Context != nullptr, "context should not be null");
-		Context->AddRef();
 		Engine = Context->GetEngine();
 		Engine->NotifyGarbageCollectorOfNewObject(this, Engine->GetTypeInfoByName(PROMISE_TYPENAME));
 		Clean();
@@ -475,7 +465,7 @@ public:
 		PROMISE_CHECK(Engine->RegisterObjectMethod(PROMISE_TYPENAME "<T>", PROMISE_TYPENAME "<T>@+ " PROMISE_YIELD "()", asMETHOD(Type, YieldIf), asCALL_THISCALL));
 		PROMISE_CHECK(Engine->RegisterObjectMethod(PROMISE_TYPENAME "<T>", "bool " PROMISE_PENDING "()", asMETHOD(Type, IsPending), asCALL_THISCALL));
 #if PROMISE_CALLBACKS
-		PROMISE_CHECK(Engine->RegisterFuncdef("void " PROMISE_TYPENAME "<T>::" PROMISE_EVENT "(T&in)"));
+		PROMISE_CHECK(Engine->RegisterFuncdef("void " PROMISE_TYPENAME "<T>::" PROMISE_EVENT "(promise<T>@+)"));
 		PROMISE_CHECK(Engine->RegisterObjectMethod(PROMISE_TYPENAME "<T>", "void " PROMISE_WHEN "(" PROMISE_EVENT "@)", asMETHODPR(Type, When, (asIScriptFunction*), void), asCALL_THISCALL));
 #endif
 		PROMISE_CHECK(Engine->RegisterObjectType(PROMISE_TYPENAME PROMISE_VOIDPOSTFIX, 0, asOBJ_REF | asOBJ_GC));
@@ -492,7 +482,7 @@ public:
 		PROMISE_CHECK(Engine->RegisterObjectMethod(PROMISE_TYPENAME PROMISE_VOIDPOSTFIX, PROMISE_TYPENAME PROMISE_VOIDPOSTFIX "@+ " PROMISE_YIELD "()", asMETHOD(Type, YieldIf), asCALL_THISCALL));
 		PROMISE_CHECK(Engine->RegisterObjectMethod(PROMISE_TYPENAME PROMISE_VOIDPOSTFIX, "bool " PROMISE_PENDING "()", asMETHOD(Type, IsPending), asCALL_THISCALL));
 #if PROMISE_CALLBACKS
-		PROMISE_CHECK(Engine->RegisterFuncdef("void " PROMISE_TYPENAME PROMISE_VOIDPOSTFIX "::" PROMISE_EVENT "()"));
+		PROMISE_CHECK(Engine->RegisterFuncdef("void " PROMISE_TYPENAME PROMISE_VOIDPOSTFIX "::" PROMISE_EVENT "(promise_v@+)"));
 		PROMISE_CHECK(Engine->RegisterObjectMethod(PROMISE_TYPENAME PROMISE_VOIDPOSTFIX, "void " PROMISE_WHEN "(" PROMISE_EVENT "@)", asMETHODPR(Type, When, (asIScriptFunction*), void), asCALL_THISCALL));
 #endif
 	}
@@ -590,12 +580,14 @@ private:
 	A fast and minimal code generator function for custom syntax of promise class,
 	it takes raw code input with <await> syntax and returns code that use un-wrappers.
 */
-static char* AsGeneratePromiseEntrypoints(const char* Text, size_t Size, void*(*AllocateMemory)(size_t) = &asAllocMem, void(*FreeMemory)(void*) = &asFreeMem)
+static char* AsGeneratePromiseEntrypoints(const char* Text, size_t* InoutTextSize, void*(*AllocateMemory)(size_t) = &asAllocMem, void(*FreeMemory)(void*) = &asFreeMem)
 {
 	PROMISE_ASSERT(Text != nullptr, "script code should not be null");
+	PROMISE_ASSERT(InoutTextSize != nullptr, "script code size should not be null");
 	PROMISE_ASSERT(AllocateMemory != nullptr, "memory allocation function should not be null");
 	PROMISE_ASSERT(FreeMemory != nullptr, "memory deallocation function should not be null");
 	const char Match[] = PROMISE_AWAIT " ";
+	size_t Size = *InoutTextSize;
 	char* Code = (char*)AllocateMemory(Size + 1);
 	size_t MatchSize = sizeof(Match) - 1;
 	size_t Offset = 0;
@@ -735,6 +727,8 @@ static char* AsGeneratePromiseEntrypoints(const char* Text, size_t Size, void*(*
 		size_t GeneratorSize = sizeof(Generator) - 1;
 		size_t RightSize = Size - Offset;
 		size_t SubstringSize = LeftSize + MiddleSize + GeneratorSize + RightSize;
+		size_t PrevSize = End - Offset;
+		size_t NewSize = MiddleSize + GeneratorSize;
 
 		char* Substring = (char*)AllocateMemory(SubstringSize + 1);
 		memcpy(Substring, Left, LeftSize);
@@ -751,11 +745,13 @@ static char* AsGeneratePromiseEntrypoints(const char* Text, size_t Size, void*(*
 		Substring[NestedSize] = Prev;
 
 		Code = Substring;
-		Size = strlen(Code);
+		Size -= PrevSize;
+		Size += NewSize;
 		if (!IsRecursive)
 			Offset += MiddleSize + GeneratorSize;
 	}
 
+	*InoutTextSize = Size;
 	return Code;
 }
 #endif
@@ -767,10 +763,6 @@ static char* AsGeneratePromiseEntrypoints(const char* Text, size_t Size, void*(*
 */
 struct AsDirectExecutor
 {
-	/* Called before suspend, this method will probably be optimized out */
-	inline void operator()(AsBasicPromise<AsDirectExecutor>*)
-	{
-	}
 	/* Called after suspend, this method will probably be inlined anyways */
 	inline void operator()(AsBasicPromise<AsDirectExecutor>* Promise, asIScriptContext* Context)
 	{
@@ -781,13 +773,6 @@ struct AsDirectExecutor
 			exception should thrown if possible
 		*/
 		Context->Execute();
-
-		/*
-			YieldIf will add reference to context and promise,
-			this will decrease reference count back to normal,
-			otherwise memory will leak
-		*/
-		Promise->Release();
 	}
 	/* Called after suspend, for callback execution */
 	inline void operator()(AsBasicPromise<AsDirectExecutor>* Promise, asIScriptContext* Context, asIScriptFunction* Callback)
@@ -802,7 +787,7 @@ struct AsDirectExecutor
 		auto Execute = [&Promise, &Context, &Callback]()
 		{
 			PROMISE_CHECK(Context->Prepare(Callback));
-			PROMISE_CHECK(Context->SetArgAddress(0, Promise->Retrieve()));
+			PROMISE_CHECK(Context->SetArgObject(0, Promise));
 			Context->Execute();
 		};
 		if (State == asEXECUTION_ACTIVE)
@@ -823,7 +808,6 @@ struct AsDirectExecutor
 
 		/* Cleanup referenced resources */
 		AsClearCallback(Callback);
-		Promise->Release();
 	}
 };
 
@@ -835,10 +819,6 @@ struct AsReactiveExecutor
 {
 	typedef std::function<void(AsBasicPromise<AsReactiveExecutor>*, asIScriptFunction*)> ReactiveCallback;
 
-	/* Called before suspend, this method will probably be optimized out */
-	inline void operator()(AsBasicPromise<AsReactiveExecutor>*)
-	{
-	}
 	/* Called after suspend, this method will probably be inlined anyways */
 	inline void operator()(AsBasicPromise<AsReactiveExecutor>* Promise, asIScriptContext* Context)
 	{

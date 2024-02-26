@@ -26,7 +26,7 @@ void main()
     auto indirect_timer = set_timeout(100); // Promise is created, resolved and awaited in AS
     indirect_timer.when(function(value)
     {
-        print_resolve_timeout_async(value);
+        print_resolve_timeout_async(value.unwrap());
     });
 
     /* Can be both awaited and callback fired at the same time */
@@ -34,7 +34,7 @@ void main()
     co_await set_timeout(1000);
     co_await set_timeout(500);
 
-    auto blocking_timer = set_timeout(1350);
+    auto blocking_timer = set_timeout_native_promise(1350);
     try 
     {
         await_promise_blocking(@blocking_timer); // await promise within C++ (blocking)
