@@ -269,18 +269,18 @@ public:
 		auto* WrapperCallback = Callbacks.Wrapper;
 		Callbacks.Wrapper = nullptr;
 		Unique.unlock();
+
+		if (NativeCallback != nullptr)
+			NativeCallback(this);
+		
+		if (WrapperCallback != nullptr)
+			Executor()(this, Context, WrapperCallback);
 #else
 		Ready.notify_all();
 		Unique.unlock();
 #endif
 		if (WantsResume)
 			Executor()(this, Context);
-#if PROMISE_CALLBACKS
-		if (NativeCallback != nullptr)
-			NativeCallback(this);
-		if (WrapperCallback != nullptr)
-			Executor()(this, Context, WrapperCallback);
-#endif
 	}
 	/* Thread safe store function, a little easier for C++ usage */
 	void Store(void* RefPointer, const char* TypeName)
@@ -342,6 +342,7 @@ public:
 	/* Thread safe retrieve function, also non-blocking, another syntax is used */
 	void* Retrieve()
 	{
+		RetrieveVoid();
 		if (Value.TypeId == PROMISE_NULLID)
 			return nullptr;
 
@@ -354,9 +355,13 @@ public:
 
 		return nullptr;
 	}
-	/* Thread safe retrieve function, no-op */
+	/* Thread safe retrieve function */
 	void RetrieveVoid()
 	{
+		std::unique_lock<std::mutex> Unique(Update);
+		asIScriptContext* ThisContext = asGetActiveContext();
+		if (ThisContext != nullptr && IsPending())
+			ThisContext->SetException("promise is still pending");
 	}
 	/* Can be used to check if promise is still pending */
 	bool IsPending()
