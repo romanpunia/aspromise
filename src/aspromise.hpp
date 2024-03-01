@@ -652,42 +652,28 @@ static char* AsGeneratePromiseEntrypoints(const char* Text, size_t* InoutTextSiz
 		size_t Start = Offset + MatchSize;
 		while (Start < Size)
 		{
-			char& V = Code[Start];
-			if (!isspace(V))
+			if (!isspace((uint8_t)Code[Start]))
 				break;
 			++Start;
 		}
 
-		int32_t Indexers = 0;
 		int32_t Brackets = 0;
-		int32_t Braces = 0;
-		int32_t Quotes = 0;
 		size_t End = Start;
 		while (End < Size)
 		{
-			char& V = Code[End];
+			char V = Code[End];
 			if (V == ')')
 			{
 				if (--Brackets < 0)
 					break;
 			}
-			else if (V == '}')
-			{
-				if (--Braces < 0)
-					break;
-			}
-			else if (V == ']')
-			{
-				if (--Indexers < 0)
-					break;
-			}
-			else if (U == '\"' || U == '\'')
+			else if (V == '\"' || V == '\'')
 			{
 				++End;
 				while (End < Size)
 				{
 					size_t LastEnd = End++;
-					if (Code[LastEnd] != U)
+					if (Code[LastEnd] != V)
 						continue;
 
 					if (LastEnd < 1 || Code[LastEnd - 1] != '\\')
@@ -698,34 +684,20 @@ static char* AsGeneratePromiseEntrypoints(const char* Text, size_t* InoutTextSiz
 				}
 				--End;
 			}
-			else if (V == '(')
-				++Brackets;
-			else if (V == '{')
-				++Braces;
-			else if (V == '[')
-				++Indexers;
 			else if (V == ';')
 				break;
-			else if (Brackets == 0 && Braces == 0 && Indexers == 0)
-			{
-				if (!isalnum(V) && V != '.' && V != ' ' && V != '_')
-				{
-					if (V != ':' || End + 1 >= Size || Code[End + 1] != ':')
-						break;
-					else
-						++End;
-				}
-			}
+			else if (V == '(')
+				++Brackets;
 			End++;
 		}
 
-		if (!(End - Start))
+		if (End == Start)
 		{
 			Offset = End;
 			continue;
 		}
 
-		const char Generator[] = "." PROMISE_YIELD "()." PROMISE_UNWRAP "()";
+		const char Generator[] = ")." PROMISE_YIELD "()." PROMISE_UNWRAP "()";
 		char* Left = Code, * Middle = Code + Start, * Right = Code + End;
 		size_t LeftSize = Offset;
 		size_t MiddleSize = End - Start;
@@ -733,13 +705,14 @@ static char* AsGeneratePromiseEntrypoints(const char* Text, size_t* InoutTextSiz
 		size_t RightSize = Size - Offset;
 		size_t SubstringSize = LeftSize + MiddleSize + GeneratorSize + RightSize;
 		size_t PrevSize = End - Offset;
-		size_t NewSize = MiddleSize + GeneratorSize;
+		size_t NewSize = MiddleSize + GeneratorSize + 1;
 
 		char* Substring = (char*)AllocateMemory(SubstringSize + 1);
 		memcpy(Substring, Left, LeftSize);
-		memcpy(Substring + LeftSize, Middle, MiddleSize);
-		memcpy(Substring + LeftSize + MiddleSize, Generator, GeneratorSize);
-		memcpy(Substring + LeftSize + MiddleSize + GeneratorSize, Right, RightSize);
+		memcpy(Substring + LeftSize, "(", 1);
+		memcpy(Substring + LeftSize + 1, Middle, MiddleSize);
+		memcpy(Substring + LeftSize + 1 + MiddleSize, Generator, GeneratorSize);
+		memcpy(Substring + LeftSize + 1 + MiddleSize + GeneratorSize, Right, RightSize);
 		Substring[SubstringSize] = '\0';
 		FreeMemory(Code);
 
