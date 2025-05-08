@@ -2,7 +2,7 @@ uint32 timers_processed = 1;
 
 class timeout_event
 {
-    promise<int32>@ data = promise<int32>();
+    promise<uint32>@ data = promise<uint32>();
 
     void settle()
     {
@@ -11,7 +11,7 @@ class timeout_event
     }
 }
 
-promise<int32>@ set_timeout(uint64 timeout_ms)
+promise<uint32>@ set_timeout(uint64 timeout_ms)
 {
     timeout_event@ event = timeout_event();
     set_timeout_native(timeout_ms, timer_callback(event.settle));

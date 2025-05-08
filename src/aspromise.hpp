@@ -504,7 +504,7 @@ private:
 		{
 			asIScriptEngine* Engine = Info->GetEngine();
 			asITypeInfo* SubType = Engine->GetTypeInfoById(TypeId);
-			asDWORD Flags = SubType->GetFlags();
+			asQWORD Flags = SubType->GetFlags();
 
 			if ((Flags & asOBJ_VALUE) && !(Flags & asOBJ_POD))
 			{
@@ -562,7 +562,7 @@ private:
 		else
 		{
 			asITypeInfo* SubType = Info->GetEngine()->GetTypeInfoById(TypeId);
-			asDWORD Flags = SubType->GetFlags();
+			asQWORD Flags = SubType->GetFlags();
 
 			if (!(Flags & asOBJ_GC))
 			{

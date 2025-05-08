@@ -42,7 +42,7 @@ uint64_t GetMilliseconds()
 void PrintSetTimeout(uint64_t Ms)
 {
 	auto ThreadId = GetThreadId();
-	printf("\nset timeout for %" PRIu64 "ms (thread %s)\n", Ms, ThreadId.c_str());
+	printf("set timeout for %" PRIu64 "ms (thread %s)\n", Ms, ThreadId.c_str());
 }
 void PrintResolveTimeout(uint64_t Ms)
 {
@@ -125,11 +125,11 @@ void* SetTimeoutNativePromise(uint64_t Ms)
 		std::this_thread::sleep_for(std::chrono::milliseconds(Ms));
 		PrintResolveTimeout(Ms); // Print as in script file
 
-		int32_t Value = 1;
+		uint32_t Value = 1;
 		if (ExecutionPolicy == ExampleExecution::SettlementThread_ExecutesNext)
 		{
 			AsDirectPromise* Promise = (AsDirectPromise*)Result;
-			Promise->Store(&Value, asTYPEID_INT32); // Settle the promise
+			Promise->Store(&Value, asTYPEID_UINT32); // Settle the promise
 			/*
 				Must release, returned promise ref-count is automatically incremented,
 				in more complex environments additional logic may be required to maintain
@@ -140,7 +140,7 @@ void* SetTimeoutNativePromise(uint64_t Ms)
 		else if (ExecutionPolicy == ExampleExecution::NodeJSEventLoop_ExecutesNext)
 		{
 			AsReactivePromise* Promise = (AsReactivePromise*)Result;
-			Promise->Store(&Value, asTYPEID_INT32);
+			Promise->Store(&Value, asTYPEID_UINT32);
 			Promise->Release();
 		}
 		asThreadCleanup();
@@ -158,8 +158,8 @@ void AwaitPromiseBlocking(void* Promise)
 			Here we can block current thread because we know
 			that some other thread will resolve the promise 
 		*/
-		int32_t Number = 0;
-		((AsDirectPromise*)Promise)->WaitIf()->Retrieve(&Number, asTYPEID_INT32);
+		uint32_t Number = 0;
+		((AsDirectPromise*)Promise)->WaitIf()->Retrieve(&Number, asTYPEID_UINT32);
 		printf("  received number %i from script context (blocking)\n", Number);
 	}
 	else if (ExecutionPolicy == ExampleExecution::NodeJSEventLoop_ExecutesNext)
@@ -167,7 +167,7 @@ void AwaitPromiseBlocking(void* Promise)
 		asIScriptContext* Context = asGetActiveContext();
 		PROMISE_ASSERT(Context != nullptr, "cannot access current context");
 		Context->SetException("cannot block current thread to wait for promise");
-		printf("  >> cannot do blocking await while using event loop <<\n");
+		printf("  !!! cannot do blocking await while using event loop (expected)\n");
 	}
 }
 void AwaitPromiseNonBlocking(void* PromiseContext)
@@ -184,8 +184,8 @@ void AwaitPromiseNonBlocking(void* PromiseContext)
 
 		Promise->When([Context](AsDirectPromise* Promise)
 		{
-			int32_t Number = 0;
-			Promise->Retrieve(&Number, asTYPEID_INT32);
+			uint32_t Number = 0;
+			Promise->Retrieve(&Number, asTYPEID_UINT32);
 			printf("  received number %i from script context (non-blocking)\n", Number);
 			/*
 				If promise was pending then we resume the context otherwise this callback
@@ -205,8 +205,8 @@ void AwaitPromiseNonBlocking(void* PromiseContext)
 
 		Promise->When([Context](AsReactivePromise* Promise)
 		{
-			int32_t Number = 0;
-			Promise->Retrieve(&Number, asTYPEID_INT32);
+			uint32_t Number = 0;
+			Promise->Retrieve(&Number, asTYPEID_UINT32);
 			printf("  received number %i from script context (non-blocking)\n", Number);
 			if (Context != nullptr)
 				PROMISE_CHECK(Context->Execute());
@@ -244,9 +244,9 @@ int main(int argc, char* argv[])
 	PROMISE_CHECK(Engine->RegisterGlobalFunction("void print_resolve_timeout_async(uint32)", asFUNCTION(PrintResolveTimeoutAsync), asCALL_CDECL));
 	PROMISE_CHECK(Engine->RegisterGlobalFunction("void print_and_wait_for_input(uint64, uint32)", asFUNCTION(PrintAndWaitForInput), asCALL_CDECL));
 	PROMISE_CHECK(Engine->RegisterGlobalFunction("void set_timeout_native(uint64, timer_callback@)", asFUNCTION(SetTimeoutNative), asCALL_CDECL));
-	PROMISE_CHECK(Engine->RegisterGlobalFunction("void await_promise_blocking(promise<int>@+)", asFUNCTION(AwaitPromiseBlocking), asCALL_CDECL));
-	PROMISE_CHECK(Engine->RegisterGlobalFunction("void await_promise_non_blocking(promise<int>@+)", asFUNCTION(AwaitPromiseNonBlocking), asCALL_CDECL));
-	PROMISE_CHECK(Engine->RegisterGlobalFunction("promise<int32>@+ set_timeout_native_promise(uint64)", asFUNCTION(SetTimeoutNativePromise), asCALL_CDECL));
+	PROMISE_CHECK(Engine->RegisterGlobalFunction("void await_promise_blocking(promise<uint32>@+)", asFUNCTION(AwaitPromiseBlocking), asCALL_CDECL));
+	PROMISE_CHECK(Engine->RegisterGlobalFunction("void await_promise_non_blocking(promise<uint32>@+)", asFUNCTION(AwaitPromiseNonBlocking), asCALL_CDECL));
+	PROMISE_CHECK(Engine->RegisterGlobalFunction("promise<uint32>@+ set_timeout_native_promise(uint64)", asFUNCTION(SetTimeoutNativePromise), asCALL_CDECL));
 
 	/* Script dump */
 	FILE* Stream = (FILE*)fopen(Path.c_str(), "rb");
